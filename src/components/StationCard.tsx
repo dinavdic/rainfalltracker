@@ -7,7 +7,7 @@ interface StationCardProps {
   city: string;
   mtd: number | null;
   hasLiveData: boolean;
-  qpfSum: number;
+  qpfSum: number | null; // null = unavailable, 0 = valid forecast of no rain
   thresholds: ThresholdProbability[];
   lastDate: string | null;
   error?: string;
@@ -46,7 +46,7 @@ export default function StationCard({
 }: StationCardProps) {
   const mtdValue = mtd ?? 0;
   const progressPct = Math.min((mtdValue / 5.0) * 100, 100);
-  const hasQpf = qpfSum > 0;
+  const hasQpf = qpfSum !== null;
 
   return (
     <div className="bg-white rounded-lg border border-gray-200 p-5">
@@ -139,7 +139,7 @@ export default function StationCard({
 
       {/* QPF line */}
       <div className="text-xs text-gray-400">
-        7-day QPF: {hasQpf ? `${qpfSum.toFixed(2)}"` : "unavailable"}
+        7-day QPF: {qpfSum !== null ? `${qpfSum.toFixed(2)}"` : "unavailable"}
       </div>
     </div>
   );

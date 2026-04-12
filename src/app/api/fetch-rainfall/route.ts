@@ -256,7 +256,7 @@ export async function GET(request: NextRequest) {
           ? iemResult.value
           : { mtd: null, lastDate: null };
       const qpfSum =
-        qpfResult.status === "fulfilled" ? qpfResult.value : 0;
+        qpfResult.status === "fulfilled" ? qpfResult.value : null;
 
       const data: StationRainfallData = {
         mtd: iem.mtd,

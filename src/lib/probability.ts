@@ -33,7 +33,7 @@ function daysInMonth(month: number): number {
  * @param month - Current month (1-12)
  * @param dayOfMonth - Current day of month (1-31)
  * @param mtd - Month-to-date rainfall in inches
- * @param qpfSum - 7-day quantitative precipitation forecast total (inches), 0 if unavailable
+ * @param qpfSum - 7-day quantitative precipitation forecast total (inches), null if unavailable
  * @param historical - The full historical distributions data
  */
 export function computeProbabilities(
@@ -41,7 +41,7 @@ export function computeProbabilities(
   month: number,
   dayOfMonth: number,
   mtd: number,
-  qpfSum: number,
+  qpfSum: number | null,
   historical: HistoricalData
 ): StationProbabilities {
   const stationData = historical.stations[station];
@@ -54,8 +54,6 @@ export function computeProbabilities(
   const forecastDays = Math.min(7, daysRemaining);
   // Climatology period: days after the forecast window through end of month
   const climatologyDays = daysRemaining - forecastDays;
-
-  const hasQpf = qpfSum > 0;
 
   const thresholds: ThresholdProbability[] = THRESHOLDS.map((threshold) => {
     // Base rate: unconditional probability that the full month exceeds this threshold
@@ -91,7 +89,7 @@ export function computeProbabilities(
     //           = P(climatology_remainder > remaining_needed - QPF_sum)
     let blendedProbability = climatologyProbability; // fallback if no QPF
 
-    if (hasQpf) {
+    if (qpfSum !== null) {
       const neededAfterQpf = remainingNeeded - qpfSum;
 
       if (neededAfterQpf <= 0) {

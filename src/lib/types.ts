@@ -57,7 +57,7 @@ export interface HistoricalData {
 export interface StationRainfallData {
   mtd: number | null;
   qpf7day: number[];
-  qpfSum: number;
+  qpfSum: number | null; // null = fetch failed/unavailable, 0 = valid forecast of no rain
   lastUpdated: string | null;
   error?: string;
   qpfError?: string;
@@ -81,6 +81,6 @@ export interface StationProbabilities {
   month: number;
   dayOfMonth: number;
   mtd: number;
-  qpfSum: number;
+  qpfSum: number | null;
   thresholds: ThresholdProbability[];
 }

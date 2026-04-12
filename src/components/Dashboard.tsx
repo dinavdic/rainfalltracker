@@ -92,7 +92,7 @@ export default function Dashboard() {
   for (const station of STATIONS) {
     const rainData = rainfall?.stations[station.code];
     const mtd = rainData?.mtd ?? null;
-    const qpfSum = rainData?.qpfSum ?? 0;
+    const qpfSum = rainData?.qpfSum ?? null;
 
     mtdValues[station.code] = mtd;
 
@@ -144,7 +144,7 @@ export default function Dashboard() {
             const probs = stationProbs[station.code];
             const rainData = rainfall?.stations[station.code];
 
-            const qpfSum = rainData?.qpfSum ?? 0;
+            const qpfSum = rainData?.qpfSum ?? null;
 
             return (
               <StationCard

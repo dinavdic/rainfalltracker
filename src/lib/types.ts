@@ -2,7 +2,7 @@ export interface StationConfig {
   code: string;
   city: string;
   cliParams: string;
-  ghcnId: string;
+  iemCode: string;
   lat: number;
   lon: number;
 }
@@ -38,7 +38,7 @@ export interface MonthDistribution {
 
 export interface StationHistorical {
   city: string;
-  ghcn_id: string;
+  iem_code: string;
   months: Record<string, MonthDistribution>;
 }
 

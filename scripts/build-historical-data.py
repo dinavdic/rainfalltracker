@@ -3,7 +3,7 @@
 Historical rainfall data pipeline using IEM CLI archive.
 
 Downloads daily precipitation data from the Iowa Environmental Mesonet (IEM)
-CLI archive for 6 US airport stations (1991-2024). This data matches the exact
+CLI archive for 10 US stations (1991-2024). This data matches the exact
 NWS CLI reports used for Kalshi settlement.
 
 IEM CLI archive: https://mesonet.agron.iastate.edu/cgi-bin/request/cli.py
@@ -26,16 +26,18 @@ from urllib.error import URLError, HTTPError
 import numpy as np
 from scipy import stats
 
-# IEM CLI station codes -> internal app codes and metadata
-# Note: IEM uses "NYC" for the New York/Central Park CLI report,
-# which we map to internal code "JFK" (matching Kalshi's convention).
+# Station codes match IEM CLI identifiers and Kalshi settlement stations.
 STATIONS = {
-    "SFO": {"city": "San Francisco", "iem_code": "SFO"},
-    "MIA": {"city": "Miami",         "iem_code": "MIA"},
-    "DEN": {"city": "Denver",        "iem_code": "DEN"},
-    "ORD": {"city": "Chicago",       "iem_code": "ORD"},
-    "JFK": {"city": "New York",      "iem_code": "NYC"},
-    "SEA": {"city": "Seattle",       "iem_code": "SEA"},
+    "SFO": {"city": "San Francisco",  "iem_code": "SFO"},
+    "LAX": {"city": "Los Angeles",    "iem_code": "LAX"},
+    "MIA": {"city": "Miami",          "iem_code": "MIA"},
+    "DEN": {"city": "Denver",         "iem_code": "DEN"},
+    "MDW": {"city": "Chicago",        "iem_code": "MDW"},
+    "NYC": {"city": "New York",       "iem_code": "NYC"},
+    "SEA": {"city": "Seattle",        "iem_code": "SEA"},
+    "AUS": {"city": "Austin",         "iem_code": "AUS"},
+    "DFW": {"city": "Dallas-Fort Worth", "iem_code": "DFW"},
+    "HOU": {"city": "Houston",        "iem_code": "HOU"},
 }
 
 IEM_BASE = "https://mesonet.agron.iastate.edu/cgi-bin/request/cli.py"

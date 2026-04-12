@@ -24,8 +24,8 @@ export const STATIONS: StationConfig[] = [
     city: "Miami",
     cliParams: "site=MFL&product=CLI&issuedby=MIA",
     iemCode: "MIA",
-    lat: 25.7959,
-    lon: -80.287,
+    lat: 25.7617,
+    lon: -80.1918,
     nwsGrid: { office: "MFL", gridX: 109, gridY: 50 },
   },
   {

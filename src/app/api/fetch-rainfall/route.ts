@@ -7,6 +7,10 @@ export const dynamic = "force-dynamic";
 
 const IEM_JSON_BASE = "https://mesonet.agron.iastate.edu/json/cli.py";
 const NWS_GRIDPOINTS_BASE = "https://api.weather.gov/gridpoints";
+const NWS_POINTS_BASE = "https://api.weather.gov/points";
+
+// In-memory cache of resolved grid coordinates (survives across requests in the same serverless instance)
+const resolvedGridCache: Record<string, NWSGridInfo> = {};
 
 interface IEMResult {
   valid: string;
@@ -72,27 +76,107 @@ async function fetchIEMMTD(
 }
 
 /**
- * Fetch 7-day QPF from NWS gridpoints raw data endpoint.
- *
- * Uses https://api.weather.gov/gridpoints/{office}/{gridX},{gridY}
- * which returns quantitativePrecipitation as a time series of expected
- * precipitation in 6-hour windows. Sums values for the next 7 days.
- *
- * Returns the total QPF in inches for the next 7 days.
+ * Resolve NWS grid coordinates from lat/lon using the /points API.
+ * Caches results in memory so we only call this once per station per serverless instance.
  */
-async function fetchQPF(grid: NWSGridInfo): Promise<number> {
-  const url = `${NWS_GRIDPOINTS_BASE}/${grid.office}/${grid.gridX},${grid.gridY}`;
+async function resolveGridFromPoints(
+  lat: number,
+  lon: number
+): Promise<NWSGridInfo> {
+  const url = `${NWS_POINTS_BASE}/${lat},${lon}`;
 
   const resp = await fetch(url, {
     headers: {
       "User-Agent": NWS_USER_AGENT,
       Accept: "application/geo+json",
     },
-    signal: AbortSignal.timeout(15000),
+    signal: AbortSignal.timeout(10000),
   });
 
   if (!resp.ok) {
-    throw new Error(`NWS gridpoints failed: ${resp.status} ${resp.statusText}`);
+    throw new Error(`NWS /points failed: ${resp.status} ${resp.statusText}`);
+  }
+
+  const data = await resp.json();
+  const props = data.properties;
+
+  if (!props?.gridId || props?.gridX === undefined || props?.gridY === undefined) {
+    throw new Error("NWS /points response missing grid properties");
+  }
+
+  return {
+    office: props.gridId,
+    gridX: props.gridX,
+    gridY: props.gridY,
+  };
+}
+
+/**
+ * Fetch 7-day QPF from NWS gridpoints raw data endpoint.
+ *
+ * Uses https://api.weather.gov/gridpoints/{office}/{gridX},{gridY}
+ * which returns quantitativePrecipitation as a time series of expected
+ * precipitation in 6-hour windows. Sums values for the next 7 days.
+ *
+ * If the hardcoded grid coordinates fail (404 or 500-level error), falls back
+ * to resolving the correct grid via the /points API using the station's lat/lon,
+ * then retries. Resolved grids are cached in memory.
+ *
+ * Returns the total QPF in inches for the next 7 days.
+ */
+async function fetchQPF(
+  grid: NWSGridInfo,
+  lat: number,
+  lon: number,
+  stationCode: string
+): Promise<number> {
+  // Check if we have a previously resolved (corrected) grid for this station
+  const effectiveGrid = resolvedGridCache[stationCode] || grid;
+
+  let resp = await fetch(
+    `${NWS_GRIDPOINTS_BASE}/${effectiveGrid.office}/${effectiveGrid.gridX},${effectiveGrid.gridY}`,
+    {
+      headers: {
+        "User-Agent": NWS_USER_AGENT,
+        Accept: "application/geo+json",
+      },
+      signal: AbortSignal.timeout(15000),
+    }
+  );
+
+  // If the gridpoints call failed, try resolving via /points API
+  if (!resp.ok) {
+    console.warn(
+      `[QPF] ${stationCode}: gridpoints failed (${resp.status}) for ` +
+        `${effectiveGrid.office}/${effectiveGrid.gridX},${effectiveGrid.gridY}. ` +
+        `Falling back to /points/${lat},${lon}`
+    );
+
+    const resolved = await resolveGridFromPoints(lat, lon);
+    resolvedGridCache[stationCode] = resolved;
+
+    console.log(
+      `[QPF] ${stationCode}: resolved grid via /points: ` +
+        `${resolved.office}/${resolved.gridX},${resolved.gridY}`
+    );
+
+    resp = await fetch(
+      `${NWS_GRIDPOINTS_BASE}/${resolved.office}/${resolved.gridX},${resolved.gridY}`,
+      {
+        headers: {
+          "User-Agent": NWS_USER_AGENT,
+          Accept: "application/geo+json",
+        },
+        signal: AbortSignal.timeout(15000),
+      }
+    );
+
+    if (!resp.ok) {
+      throw new Error(
+        `NWS gridpoints failed after /points resolve: ${resp.status} ${resp.statusText} ` +
+          `(grid: ${resolved.office}/${resolved.gridX},${resolved.gridY})`
+      );
+    }
   }
 
   const data = await resp.json();
@@ -164,7 +248,7 @@ export async function GET(request: NextRequest) {
       // Fetch IEM MTD and NWS QPF in parallel
       const [iemResult, qpfResult] = await Promise.allSettled([
         fetchIEMMTD(station.iemCode),
-        fetchQPF(station.nwsGrid),
+        fetchQPF(station.nwsGrid, station.lat, station.lon, station.code),
       ]);
 
       const iem =
@@ -195,6 +279,16 @@ export async function GET(request: NextRequest) {
   for (const result of results) {
     if (result.status === "fulfilled") {
       stations[result.value.code] = result.value.data;
+    }
+  }
+
+  // Log any QPF errors for debugging
+  for (const [code, stationData] of Object.entries(stations)) {
+    if (stationData.qpfError) {
+      console.error(`[fetch-rainfall] ${code} QPF error: ${stationData.qpfError}`);
+    }
+    if (stationData.error) {
+      console.error(`[fetch-rainfall] ${code} IEM error: ${stationData.error}`);
     }
   }
 

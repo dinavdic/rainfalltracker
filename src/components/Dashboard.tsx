@@ -7,7 +7,7 @@ import {
   StationProbabilities,
 } from "@/lib/types";
 import { computeProbabilities } from "@/lib/probability";
-import { STATIONS } from "@/lib/stations";
+import { STATIONS, THRESHOLDS } from "@/lib/stations";
 import StationCard from "./StationCard";
 import CumulativeChart from "./CumulativeChart";
 
@@ -152,29 +152,13 @@ export default function Dashboard() {
                 mtd={mtdValues[station.code]}
                 hasLiveData={rainData?.mtd !== null && rainData?.mtd !== undefined}
                 thresholds={
-                  probs?.thresholds ?? [
-                    {
-                      threshold: 1.0,
-                      remainingNeeded: 1.0,
-                      baseRate: 0,
-                      blendedProbability: 0,
-                      climatologyProbability: 0,
-                    },
-                    {
-                      threshold: 2.0,
-                      remainingNeeded: 2.0,
-                      baseRate: 0,
-                      blendedProbability: 0,
-                      climatologyProbability: 0,
-                    },
-                    {
-                      threshold: 3.0,
-                      remainingNeeded: 3.0,
-                      baseRate: 0,
-                      blendedProbability: 0,
-                      climatologyProbability: 0,
-                    },
-                  ]
+                  probs?.thresholds ?? THRESHOLDS.map((t) => ({
+                    threshold: t,
+                    remainingNeeded: t,
+                    baseRate: 0,
+                    blendedProbability: 0,
+                    climatologyProbability: 0,
+                  }))
                 }
                 lastDate={rainData?.lastUpdated ?? null}
                 error={rainData?.error}

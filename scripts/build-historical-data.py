@@ -46,7 +46,7 @@ STATIONS = {
 IEM_BASE = "https://mesonet.agron.iastate.edu/json/cli.py"
 START_YEAR = 1991
 END_YEAR = 2024
-THRESHOLDS = [1.0, 2.0, 3.0]
+THRESHOLDS = [1.0, 2.0, 3.0, 4.0, 5.0]
 
 DAYS_IN_MONTH = {1:31, 2:28, 3:31, 4:30, 5:31, 6:30, 7:31, 8:31, 9:30, 10:31, 11:30, 12:31}
 

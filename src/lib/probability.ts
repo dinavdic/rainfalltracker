@@ -58,7 +58,8 @@ export function computeProbabilities(
 
   const thresholds: ThresholdProbability[] = THRESHOLDS.map((threshold) => {
     // Base rate: unconditional probability that the full month exceeds this threshold
-    const baseRate = monthData?.base_rates[String(threshold)] ?? 0;
+    // JSON keys are "1.0", "2.0" etc — must use toFixed(1), not String() which drops the decimal
+    const baseRate = monthData?.base_rates[threshold.toFixed(1)] ?? 0;
 
     const remainingNeeded = threshold - mtd;
 

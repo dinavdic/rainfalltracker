@@ -83,6 +83,6 @@ export const STATIONS: StationConfig[] = [
   },
 ];
 
-export const THRESHOLDS = [1.0, 2.0, 3.0];
+export const THRESHOLDS = [1.0, 2.0, 3.0, 4.0, 5.0];
 
 export const NWS_USER_AGENT = "RainfallTracker/1.0 (contact@example.com)";

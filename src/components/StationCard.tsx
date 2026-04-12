@@ -43,7 +43,7 @@ export default function StationCard({
   error,
 }: StationCardProps) {
   const mtdValue = mtd ?? 0;
-  const progressPct = Math.min((mtdValue / 3.0) * 100, 100);
+  const progressPct = Math.min((mtdValue / 5.0) * 100, 100);
 
   return (
     <div className="bg-white rounded-lg border border-gray-200 p-5">

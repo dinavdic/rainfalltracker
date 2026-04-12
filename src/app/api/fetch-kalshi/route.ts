@@ -25,11 +25,14 @@ interface KalshiMarket {
   event_ticker: string;
   title: string;
   subtitle?: string;
+  yes_sub_title?: string;
   status: string;
-  yes_bid: number;
-  yes_ask: number;
-  last_price: number;
-  volume: number;
+  // Kalshi v2 API returns dollar amounts as strings (e.g., "0.56")
+  yes_bid_dollars?: string;
+  yes_ask_dollars?: string;
+  last_price_dollars?: string;
+  volume_fp?: string;
+  volume_24h_fp?: string;
   floor_strike?: number;
   custom_strike?: number;
   [key: string]: unknown;
@@ -41,12 +44,46 @@ interface KalshiMarketsResponse {
 }
 
 /**
- * Fetch markets from Kalshi API with error handling.
+ * Parse a Kalshi dollar string (e.g., "0.56") to cents (56).
+ * Returns null if the value is missing, empty, or zero.
+ */
+function dollarsToCents(dollars: string | undefined | null): number | null {
+  if (!dollars) return null;
+  const val = parseFloat(dollars);
+  if (isNaN(val) || val <= 0) return null;
+  return Math.round(val * 100);
+}
+
+/**
+ * Parse a Kalshi fixed-point volume string (e.g., "150.00") to an integer.
+ */
+function parseVolume(fp: string | undefined | null): number {
+  if (!fp) return 0;
+  const val = parseFloat(fp);
+  return isNaN(val) ? 0 : Math.round(val);
+}
+
+// Rate limiter: enforce minimum gap between Kalshi API requests
+let lastKalshiRequest = 0;
+const KALSHI_MIN_DELAY_MS = 250; // 250ms between requests to stay under rate limits
+
+/**
+ * Fetch from Kalshi API with rate limiting and error handling.
  */
 async function kalshiFetch(
   path: string,
   log: string[]
 ): Promise<unknown | null> {
+  // Enforce rate limit
+  const now = Date.now();
+  const elapsed = now - lastKalshiRequest;
+  if (elapsed < KALSHI_MIN_DELAY_MS) {
+    await new Promise((resolve) =>
+      setTimeout(resolve, KALSHI_MIN_DELAY_MS - elapsed)
+    );
+  }
+  lastKalshiRequest = Date.now();
+
   const url = `${KALSHI_API_BASE}${path}`;
   try {
     const resp = await fetch(url, {
@@ -208,20 +245,18 @@ async function discoverAndFetchMarkets(
 
       const thresholdKey = matchedThreshold.toFixed(1);
 
-      // Compute mid price
-      const yesBid =
-        market.yes_bid > 0 ? market.yes_bid : null;
-      const yesAsk =
-        market.yes_ask > 0 ? market.yes_ask : null;
-      const lastPrice =
-        market.last_price > 0 ? market.last_price : null;
+      // Parse prices: Kalshi v2 returns dollar strings, convert to cents
+      const yesBid = dollarsToCents(market.yes_bid_dollars);
+      const yesAsk = dollarsToCents(market.yes_ask_dollars);
+      const lastPrice = dollarsToCents(market.last_price_dollars);
+      const volume = parseVolume(market.volume_fp);
 
       const price: KalshiMarketPrice = {
         ticker: market.ticker,
         lastPrice,
         yesBid,
         yesAsk,
-        volume: market.volume || 0,
+        volume,
       };
 
       result[station].thresholds[thresholdKey] = price;
@@ -231,30 +266,30 @@ async function discoverAndFetchMarkets(
 
       log.push(
         `[kalshi] Mapped: ${market.ticker} -> ${station} >${thresholdKey}" ` +
-          `(bid=${yesBid} ask=${yesAsk} last=${lastPrice} vol=${market.volume})`
+          `(bid=${yesBid}c ask=${yesAsk}c last=${lastPrice}c vol=${volume})`
       );
     }
   }
 
   // --- Strategy 1: Try known series tickers per station ---
+  // Process stations in a specific order to get HOU earlier (before rate limits bite)
   log.push("[kalshi] === Strategy 1: Series ticker search ===");
 
-  for (const station of STATIONS) {
-    const candidates = KALSHI_SERIES_CANDIDATES[station.code] || [];
+  const stationOrder = STATIONS
+    .map((s) => s.code)
+    .sort((a, b) => {
+      // Prioritize HOU early to avoid rate limits after many requests
+      if (a === "HOU") return -1;
+      if (b === "HOU") return 1;
+      return 0;
+    });
+
+  for (const stationCode of stationOrder) {
+    const candidates = KALSHI_SERIES_CANDIDATES[stationCode] || [];
+    if (candidates.length === 0) continue;
 
     for (const seriesTicker of candidates) {
-      // First try the series endpoint to check if it exists
-      const seriesData = await kalshiFetch(
-        `/series/${seriesTicker}`,
-        log
-      );
-      if (seriesData) {
-        log.push(
-          `[kalshi] Series found: ${seriesTicker} -> ${JSON.stringify(seriesData).substring(0, 200)}`
-        );
-      }
-
-      // Then search for markets with this series ticker
+      // Search for markets directly (skip the /series check to halve request count)
       const data = (await kalshiFetch(
         `/markets?status=open&limit=100&series_ticker=${seriesTicker}`,
         log
@@ -266,10 +301,10 @@ async function discoverAndFetchMarkets(
         );
         for (const m of data.markets) {
           log.push(
-            `[kalshi]   ${m.ticker}: "${m.title}" bid=${m.yes_bid} ask=${m.yes_ask} last=${m.last_price} vol=${m.volume}`
+            `[kalshi]   ${m.ticker}: "${m.title}" bid=$${m.yes_bid_dollars} ask=$${m.yes_ask_dollars} last=$${m.last_price_dollars} vol=${m.volume_fp}`
           );
         }
-        processMarkets(data.markets, station.code);
+        processMarkets(data.markets, stationCode);
         break; // Found markets for this station, skip other candidates
       }
     }

@@ -93,7 +93,7 @@ export const STATIONS: StationConfig[] = [
   },
 ];
 
-export const THRESHOLDS = [1.0, 2.0, 3.0, 4.0, 5.0];
+export const THRESHOLDS = [1.0, 2.0, 3.0, 4.0, 5.0, 6.0, 7.0];
 
 export const NWS_USER_AGENT = "RainfallTracker/1.0 (rainfall-tracker@example.com)";
 
@@ -110,7 +110,7 @@ export const KALSHI_SERIES_CANDIDATES: Record<string, string[]> = {
   MDW: ["KXRAINCHIM", "KXRAINMDWM", "KXRAINCHI"],
   LAX: ["KXRAINLAXM", "KXRAINLAM", "KXRAINLAX"],
   AUS: ["KXRAINAUSM", "KXRAINAUM", "KXRAINAUS"],
-  DFW: ["KXRAINDFWM", "KXRAINDFW", "KXRAINDAL"],
+  DFW: [], // Kalshi doesn't list DFW rainfall markets as of Apr 2026
   HOU: ["KXRAINHOUM", "KXRAINHOU", "KXRAINHTX"],
   SEA: ["KXRAINSEAM", "KXRAINSEM", "KXRAINSEA"],
 };

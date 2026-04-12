@@ -103,10 +103,16 @@ export function computeProbabilities(
       } else {
         // Forecast ends before EOM — blend each member with climatology tail
         // For the uncovered tail days, use gamma distribution starting
-        // from the day the forecast ends
+        // from the day the forecast ends. Search backward if exact day has no fit.
         const tailStartDay = dayOfMonth + ensemble.forecastDays;
-        const tailDayKey = String(tailStartDay);
-        const tailDist = monthData?.days[tailDayKey];
+        let tailGamma: GammaParams | null = null;
+        for (let d = tailStartDay; d >= dayOfMonth + 1; d--) {
+          const dist = monthData?.days[String(d)];
+          if (dist?.gamma) {
+            tailGamma = dist.gamma;
+            break;
+          }
+        }
 
         let totalProb = 0;
         for (const memberSum of ensemble.memberSums) {
@@ -115,11 +121,11 @@ export function computeProbabilities(
           if (remainingAfterMember <= 0) {
             // This member already exceeds the threshold
             totalProb += 1.0;
-          } else if (tailDist?.gamma) {
+          } else if (tailGamma) {
             // P(tail_rainfall > remaining_after_member)
-            totalProb += gammaSurvival(remainingAfterMember, tailDist.gamma);
+            totalProb += gammaSurvival(remainingAfterMember, tailGamma);
           }
-          // else: no gamma fit for tail — this member contributes 0
+          // else: no gamma fit at all — this member contributes 0
         }
         ensembleProbability = totalProb / ensemble.memberSums.length;
       }

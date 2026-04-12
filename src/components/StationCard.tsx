@@ -15,12 +15,15 @@ interface StationCardProps {
 }
 
 function ProbabilityBadge({ value }: { value: number }) {
-  const pct = Math.round(value * 100);
+  const pct = value * 100;
+  const rounded = Math.round(pct);
+  // Show 1 decimal place for values under 10% to avoid misleading 0% vs 3% gaps
+  const label = pct > 0 && pct < 10 ? pct.toFixed(1) : String(rounded);
   let colorClasses: string;
 
-  if (pct >= 60) {
+  if (rounded >= 60) {
     colorClasses = "bg-green-100 text-green-800";
-  } else if (pct >= 25) {
+  } else if (rounded >= 25) {
     colorClasses = "bg-amber-100 text-amber-800";
   } else {
     colorClasses = "bg-red-100 text-red-800";
@@ -30,7 +33,7 @@ function ProbabilityBadge({ value }: { value: number }) {
     <span
       className={`inline-block px-2 py-0.5 rounded text-xs font-semibold ${colorClasses}`}
     >
-      {pct}%
+      {label}%
     </span>
   );
 }
@@ -124,7 +127,10 @@ export default function StationCard({
                 )}
               </td>
               <td className="py-1.5 text-right text-gray-400 tabular-nums">
-                {Math.round(t.baseRate * 100)}%
+                {(() => {
+                  const pct = t.baseRate * 100;
+                  return pct > 0 && pct < 10 ? pct.toFixed(1) : String(Math.round(pct));
+                })()}%
               </td>
               <td className="py-1.5 text-right">
                 <ProbabilityBadge value={t.climatologyProbability} />

@@ -54,10 +54,26 @@ export interface HistoricalData {
   generated_at: string;
 }
 
+export interface EnsembleStats {
+  mean: number;
+  median: number;
+  p10: number;
+  p25: number;
+  p75: number;
+  p90: number;
+}
+
+export interface EnsembleData {
+  memberSums: number[]; // 31 member totals in inches (remaining-in-month precip)
+  forecastDays: number; // how many days of the month the forecast covers
+  stats: EnsembleStats;
+}
+
 export interface StationRainfallData {
   mtd: number | null;
   qpf7day: number[];
-  qpfSum: number | null; // null = fetch failed/unavailable, 0 = valid forecast of no rain
+  qpfSum: number | null; // NWS deterministic fallback; null = unavailable
+  ensemble: EnsembleData | null; // Open-Meteo GEFS ensemble; null = unavailable
   lastUpdated: string | null;
   error?: string;
   qpfError?: string;
@@ -72,7 +88,7 @@ export interface ThresholdProbability {
   threshold: number;
   remainingNeeded: number | null; // null if already exceeded
   baseRate: number;
-  blendedProbability: number;
+  ensembleProbability: number;
   climatologyProbability: number;
 }
 
@@ -81,6 +97,6 @@ export interface StationProbabilities {
   month: number;
   dayOfMonth: number;
   mtd: number;
-  qpfSum: number | null;
+  ensemble: EnsembleData | null;
   thresholds: ThresholdProbability[];
 }

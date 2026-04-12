@@ -92,6 +92,7 @@ export default function Dashboard() {
   for (const station of STATIONS) {
     const rainData = rainfall?.stations[station.code];
     const mtd = rainData?.mtd ?? null;
+    const ensemble = rainData?.ensemble ?? null;
     const qpfSum = rainData?.qpfSum ?? null;
 
     mtdValues[station.code] = mtd;
@@ -102,6 +103,7 @@ export default function Dashboard() {
         month,
         dayOfMonth,
         mtd ?? 0,
+        ensemble,
         qpfSum,
         historical
       );
@@ -144,8 +146,6 @@ export default function Dashboard() {
             const probs = stationProbs[station.code];
             const rainData = rainfall?.stations[station.code];
 
-            const qpfSum = rainData?.qpfSum ?? null;
-
             return (
               <StationCard
                 key={station.code}
@@ -153,13 +153,14 @@ export default function Dashboard() {
                 city={station.city}
                 mtd={mtdValues[station.code]}
                 hasLiveData={rainData?.mtd !== null && rainData?.mtd !== undefined}
-                qpfSum={qpfSum}
+                ensemble={rainData?.ensemble ?? null}
+                qpfSum={rainData?.qpfSum ?? null}
                 thresholds={
                   probs?.thresholds ?? THRESHOLDS.map((t) => ({
                     threshold: t,
                     remainingNeeded: t,
                     baseRate: 0,
-                    blendedProbability: 0,
+                    ensembleProbability: 0,
                     climatologyProbability: 0,
                   }))
                 }
@@ -184,14 +185,14 @@ export default function Dashboard() {
         {/* Footer */}
         <footer className="mt-8 pt-6 border-t border-gray-200 text-xs text-gray-400">
           <p>
-            Data sources: IEM CLI Archive for live MTD, NWS api.weather.gov for
-            7-day QPF, 1991–2024 historical CLI distributions.
+            Data sources: IEM CLI Archive for live MTD, GEFS ensemble via
+            Open-Meteo for probabilistic QPF, 1991–2024 historical CLI
+            distributions.
           </p>
           <p className="mt-1">
-            Clim. P = P(exceed | MTD, days remaining) using gamma CDF on
-            historical remaining-period rainfall. Blended P folds in the 7-day
-            QPF as a near-certain forecast and applies climatology only to
-            the remaining days beyond the forecast window.
+            Clim. = P(exceed | MTD, days remaining) using gamma CDF.
+            Ensemble = average P(exceed) across 31 GEFS members, with
+            climatology tail for days beyond the forecast horizon.
           </p>
         </footer>
       </div>

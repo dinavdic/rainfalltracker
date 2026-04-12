@@ -1,6 +1,12 @@
 import { NextRequest, NextResponse } from "next/server";
 import { STATIONS, NWS_USER_AGENT } from "@/lib/stations";
-import { RainfallApiResponse, StationRainfallData, NWSGridInfo } from "@/lib/types";
+import {
+  RainfallApiResponse,
+  StationRainfallData,
+  NWSGridInfo,
+  EnsembleData,
+  EnsembleStats,
+} from "@/lib/types";
 import { saveRainfallData, loadRainfallData, isCacheFresh } from "@/lib/data-store";
 
 export const dynamic = "force-dynamic";
@@ -8,8 +14,12 @@ export const dynamic = "force-dynamic";
 const IEM_JSON_BASE = "https://mesonet.agron.iastate.edu/json/cli.py";
 const NWS_GRIDPOINTS_BASE = "https://api.weather.gov/gridpoints";
 const NWS_POINTS_BASE = "https://api.weather.gov/points";
+const OPEN_METEO_ENSEMBLE_BASE =
+  "https://ensemble-api.open-meteo.com/v1/ensemble";
 
-// In-memory cache of resolved grid coordinates (survives across requests in the same serverless instance)
+const ENSEMBLE_MEMBERS = 31; // GEFS members 0-30
+
+// In-memory cache of resolved grid coordinates
 const resolvedGridCache: Record<string, NWSGridInfo> = {};
 
 interface IEMResult {
@@ -59,11 +69,16 @@ async function fetchIEMMTD(
     if (entryMonth !== currentMonth) continue;
 
     const precipMonth = entry.precip_month;
-    if (precipMonth === null || precipMonth === "M" || precipMonth === undefined) {
+    if (
+      precipMonth === null ||
+      precipMonth === "M" ||
+      precipMonth === undefined
+    ) {
       continue;
     }
 
-    const val = typeof precipMonth === "string" ? parseFloat(precipMonth) : precipMonth;
+    const val =
+      typeof precipMonth === "string" ? parseFloat(precipMonth) : precipMonth;
     if (isNaN(val)) continue;
 
     if (latestDate === null || dateStr > latestDate) {
@@ -76,15 +91,132 @@ async function fetchIEMMTD(
 }
 
 /**
- * Resolve NWS grid coordinates from lat/lon using the /points API.
- * Caches results in memory so we only call this once per station per serverless instance.
+ * Compute summary statistics for an array of numbers.
  */
+function computeEnsembleStats(values: number[]): EnsembleStats {
+  const sorted = [...values].sort((a, b) => a - b);
+  const n = sorted.length;
+  const sum = sorted.reduce((a, b) => a + b, 0);
+
+  const percentile = (p: number): number => {
+    const idx = (p / 100) * (n - 1);
+    const lo = Math.floor(idx);
+    const hi = Math.ceil(idx);
+    if (lo === hi) return sorted[lo];
+    return sorted[lo] + (sorted[hi] - sorted[lo]) * (idx - lo);
+  };
+
+  return {
+    mean: Math.round((sum / n) * 100) / 100,
+    median: Math.round(percentile(50) * 100) / 100,
+    p10: Math.round(percentile(10) * 100) / 100,
+    p25: Math.round(percentile(25) * 100) / 100,
+    p75: Math.round(percentile(75) * 100) / 100,
+    p90: Math.round(percentile(90) * 100) / 100,
+  };
+}
+
+/**
+ * Fetch GEFS ensemble precipitation from Open-Meteo for a station.
+ *
+ * Sums hourly precipitation for each of 31 ensemble members, only counting
+ * hours that fall within the remainder of the current month.
+ *
+ * Returns the per-member sums (in inches) and how many forecast days are covered.
+ */
+async function fetchEnsemble(
+  lat: number,
+  lon: number,
+  stationCode: string
+): Promise<EnsembleData> {
+  const url =
+    `${OPEN_METEO_ENSEMBLE_BASE}?latitude=${lat}&longitude=${lon}` +
+    `&models=gfs_seamless&hourly=precipitation&forecast_days=16`;
+
+  const resp = await fetch(url, {
+    signal: AbortSignal.timeout(20000),
+  });
+
+  if (!resp.ok) {
+    throw new Error(
+      `Open-Meteo ensemble fetch failed for ${stationCode}: ${resp.status} ${resp.statusText}`
+    );
+  }
+
+  const data = await resp.json();
+  const hourly = data.hourly;
+
+  if (!hourly || !hourly.time) {
+    throw new Error(
+      `Open-Meteo response missing hourly data for ${stationCode}`
+    );
+  }
+
+  const times: string[] = hourly.time;
+  const now = new Date();
+  const currentYear = now.getFullYear();
+  const currentMonth = now.getMonth(); // 0-indexed
+  // End of current month (start of next month)
+  const monthEnd = new Date(currentYear, currentMonth + 1, 1);
+
+  // Find which time indices fall within the remainder of the current month
+  const validIndices: number[] = [];
+  let lastValidDate: Date | null = null;
+
+  for (let i = 0; i < times.length; i++) {
+    const t = new Date(times[i]);
+    if (t >= now && t < monthEnd) {
+      validIndices.push(i);
+      if (!lastValidDate || t > lastValidDate) {
+        lastValidDate = t;
+      }
+    }
+  }
+
+  // Compute how many forecast days are covered within the month
+  const forecastDays = lastValidDate
+    ? Math.ceil(
+        (lastValidDate.getTime() - now.getTime()) / (24 * 60 * 60 * 1000)
+      )
+    : 0;
+
+  // Sum precipitation for each ensemble member across valid hours
+  const memberSums: number[] = [];
+
+  for (let m = 0; m < ENSEMBLE_MEMBERS; m++) {
+    const key = `precipitation_member${m}`;
+    const memberData: (number | null)[] | undefined = hourly[key];
+
+    if (!memberData) {
+      // If a member is missing, use 0
+      memberSums.push(0);
+      continue;
+    }
+
+    let sumMm = 0;
+    for (const idx of validIndices) {
+      const val = memberData[idx];
+      if (val !== null && val !== undefined && val > 0) {
+        sumMm += val;
+      }
+    }
+
+    // Convert mm to inches
+    memberSums.push(Math.round((sumMm / 25.4) * 100) / 100);
+  }
+
+  const stats = computeEnsembleStats(memberSums);
+
+  return { memberSums, forecastDays, stats };
+}
+
+// --- NWS deterministic QPF (fallback) ---
+
 async function resolveGridFromPoints(
   lat: number,
   lon: number
 ): Promise<NWSGridInfo> {
   const url = `${NWS_POINTS_BASE}/${lat},${lon}`;
-
   const resp = await fetch(url, {
     headers: {
       "User-Agent": NWS_USER_AGENT,
@@ -100,37 +232,23 @@ async function resolveGridFromPoints(
   const data = await resp.json();
   const props = data.properties;
 
-  if (!props?.gridId || props?.gridX === undefined || props?.gridY === undefined) {
+  if (
+    !props?.gridId ||
+    props?.gridX === undefined ||
+    props?.gridY === undefined
+  ) {
     throw new Error("NWS /points response missing grid properties");
   }
 
-  return {
-    office: props.gridId,
-    gridX: props.gridX,
-    gridY: props.gridY,
-  };
+  return { office: props.gridId, gridX: props.gridX, gridY: props.gridY };
 }
 
-/**
- * Fetch 7-day QPF from NWS gridpoints raw data endpoint.
- *
- * Uses https://api.weather.gov/gridpoints/{office}/{gridX},{gridY}
- * which returns quantitativePrecipitation as a time series of expected
- * precipitation in 6-hour windows. Sums values for the next 7 days.
- *
- * If the hardcoded grid coordinates fail (404 or 500-level error), falls back
- * to resolving the correct grid via the /points API using the station's lat/lon,
- * then retries. Resolved grids are cached in memory.
- *
- * Returns the total QPF in inches for the next 7 days.
- */
 async function fetchQPF(
   grid: NWSGridInfo,
   lat: number,
   lon: number,
   stationCode: string
 ): Promise<number> {
-  // Check if we have a previously resolved (corrected) grid for this station
   const effectiveGrid = resolvedGridCache[stationCode] || grid;
 
   let resp = await fetch(
@@ -144,7 +262,6 @@ async function fetchQPF(
     }
   );
 
-  // If the gridpoints call failed, try resolving via /points API
   if (!resp.ok) {
     console.warn(
       `[QPF] ${stationCode}: gridpoints failed (${resp.status}) for ` +
@@ -154,11 +271,6 @@ async function fetchQPF(
 
     const resolved = await resolveGridFromPoints(lat, lon);
     resolvedGridCache[stationCode] = resolved;
-
-    console.log(
-      `[QPF] ${stationCode}: resolved grid via /points: ` +
-        `${resolved.office}/${resolved.gridX},${resolved.gridY}`
-    );
 
     resp = await fetch(
       `${NWS_GRIDPOINTS_BASE}/${resolved.office}/${resolved.gridX},${resolved.gridY}`,
@@ -173,18 +285,12 @@ async function fetchQPF(
 
     if (!resp.ok) {
       throw new Error(
-        `NWS gridpoints failed after /points resolve: ${resp.status} ${resp.statusText} ` +
-          `(grid: ${resolved.office}/${resolved.gridX},${resolved.gridY})`
+        `NWS gridpoints failed after /points resolve: ${resp.status} ${resp.statusText}`
       );
     }
   }
 
   const data = await resp.json();
-
-  // quantitativePrecipitation is in properties.quantitativePrecipitation
-  // It has a "values" array with { validTime, value } entries
-  // validTime is an ISO 8601 interval like "2026-04-12T06:00:00+00:00/PT6H"
-  // value is in mm (NWS default unit for QPF)
   const qpfProp = data.properties?.quantitativePrecipitation;
   if (!qpfProp || !qpfProp.values) {
     throw new Error("No quantitativePrecipitation in gridpoints response");
@@ -192,22 +298,18 @@ async function fetchQPF(
 
   const now = new Date();
   const sevenDaysOut = new Date(now.getTime() + 7 * 24 * 60 * 60 * 1000);
-
-  // Determine the unit — NWS returns "wmoUnit:mm" or "unit:mm" etc.
   const uom: string = qpfProp.uom || "";
   const isMm = uom.includes("mm");
 
   let totalMm = 0;
-
   for (const entry of qpfProp.values) {
     const validTime: string = entry.validTime || "";
     const value: number | null = entry.value;
-
     if (value === null || value === undefined || value <= 0) continue;
 
-    // Parse the start time from the ISO interval
     const slashIdx = validTime.indexOf("/");
-    const startStr = slashIdx > 0 ? validTime.substring(0, slashIdx) : validTime;
+    const startStr =
+      slashIdx > 0 ? validTime.substring(0, slashIdx) : validTime;
 
     let startDate: Date;
     try {
@@ -215,18 +317,33 @@ async function fetchQPF(
     } catch {
       continue;
     }
-
     if (isNaN(startDate.getTime())) continue;
 
-    // Only include periods within the next 7 days
     if (startDate >= now && startDate < sevenDaysOut) {
       totalMm += value;
     }
   }
 
-  // Convert mm to inches if needed
   const totalInches = isMm ? totalMm / 25.4 : totalMm;
   return Math.round(totalInches * 100) / 100;
+}
+
+// --- Rate limiter for Open-Meteo (1 req/sec) ---
+
+let lastOpenMeteoRequest = 0;
+
+async function rateLimitedEnsembleFetch(
+  lat: number,
+  lon: number,
+  stationCode: string
+): Promise<EnsembleData> {
+  const now = Date.now();
+  const elapsed = now - lastOpenMeteoRequest;
+  if (elapsed < 1000) {
+    await new Promise((resolve) => setTimeout(resolve, 1000 - elapsed));
+  }
+  lastOpenMeteoRequest = Date.now();
+  return fetchEnsemble(lat, lon, stationCode);
 }
 
 export async function GET(request: NextRequest) {
@@ -242,53 +359,71 @@ export async function GET(request: NextRequest) {
 
   const stations: Record<string, StationRainfallData> = {};
 
-  // Fetch MTD and QPF data for all stations in parallel
-  const results = await Promise.allSettled(
-    STATIONS.map(async (station) => {
-      // Fetch IEM MTD and NWS QPF in parallel
-      const [iemResult, qpfResult] = await Promise.allSettled([
-        fetchIEMMTD(station.iemCode),
-        fetchQPF(station.nwsGrid, station.lat, station.lon, station.code),
-      ]);
+  // Fetch all stations — ensemble requests are sequential (rate limited),
+  // but IEM and NWS QPF fallback run in parallel per station
+  for (const station of STATIONS) {
+    // Fetch IEM MTD and ensemble concurrently for this station
+    // (ensemble is rate-limited so we process stations sequentially)
+    const [iemResult, ensembleResult] = await Promise.allSettled([
+      fetchIEMMTD(station.iemCode),
+      rateLimitedEnsembleFetch(station.lat, station.lon, station.code),
+    ]);
 
-      const iem =
-        iemResult.status === "fulfilled"
-          ? iemResult.value
-          : { mtd: null, lastDate: null };
-      const qpfSum =
-        qpfResult.status === "fulfilled" ? qpfResult.value : null;
+    const iem =
+      iemResult.status === "fulfilled"
+        ? iemResult.value
+        : { mtd: null, lastDate: null };
 
-      const data: StationRainfallData = {
-        mtd: iem.mtd,
-        qpf7day: [], // We store the aggregate sum, not daily breakdown
-        qpfSum,
-        lastUpdated: iem.lastDate,
-      };
+    let ensemble: EnsembleData | null = null;
+    let qpfSum: number | null = null;
 
-      if (iemResult.status === "rejected") {
-        data.error = `IEM fetch error: ${iemResult.reason}`;
+    if (ensembleResult.status === "fulfilled") {
+      ensemble = ensembleResult.value;
+    } else {
+      // Ensemble failed — fall back to NWS deterministic QPF
+      console.warn(
+        `[ensemble] ${station.code}: Open-Meteo failed (${ensembleResult.reason}), falling back to NWS QPF`
+      );
+
+      try {
+        qpfSum = await fetchQPF(
+          station.nwsGrid,
+          station.lat,
+          station.lon,
+          station.code
+        );
+      } catch (e) {
+        console.error(
+          `[QPF fallback] ${station.code}: NWS QPF also failed: ${e}`
+        );
       }
-      if (qpfResult.status === "rejected") {
-        data.qpfError = `QPF fetch error: ${qpfResult.reason}`;
-      }
-
-      return { code: station.code, data };
-    })
-  );
-
-  for (const result of results) {
-    if (result.status === "fulfilled") {
-      stations[result.value.code] = result.value.data;
     }
+
+    const data: StationRainfallData = {
+      mtd: iem.mtd,
+      qpf7day: [],
+      qpfSum,
+      ensemble,
+      lastUpdated: iem.lastDate,
+    };
+
+    if (iemResult.status === "rejected") {
+      data.error = `IEM fetch error: ${iemResult.reason}`;
+    }
+    if (ensembleResult.status === "rejected" && qpfSum === null) {
+      data.qpfError = `Ensemble + QPF fetch error: ${ensembleResult.reason}`;
+    }
+
+    stations[station.code] = data;
   }
 
-  // Log any QPF errors for debugging
+  // Log errors for debugging
   for (const [code, stationData] of Object.entries(stations)) {
     if (stationData.qpfError) {
-      console.error(`[fetch-rainfall] ${code} QPF error: ${stationData.qpfError}`);
+      console.error(`[fetch-rainfall] ${code}: ${stationData.qpfError}`);
     }
     if (stationData.error) {
-      console.error(`[fetch-rainfall] ${code} IEM error: ${stationData.error}`);
+      console.error(`[fetch-rainfall] ${code}: ${stationData.error}`);
     }
   }
 
@@ -297,7 +432,6 @@ export async function GET(request: NextRequest) {
     fetchedAt: new Date().toISOString(),
   };
 
-  // Persist to disk for caching
   try {
     await saveRainfallData(response);
   } catch {

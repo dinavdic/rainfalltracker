@@ -1,13 +1,14 @@
 "use client";
 
-import { ThresholdProbability } from "@/lib/types";
+import { ThresholdProbability, EnsembleData } from "@/lib/types";
 
 interface StationCardProps {
   code: string;
   city: string;
   mtd: number | null;
   hasLiveData: boolean;
-  qpfSum: number | null; // null = unavailable, 0 = valid forecast of no rain
+  ensemble: EnsembleData | null;
+  qpfSum: number | null; // NWS fallback
   thresholds: ThresholdProbability[];
   lastDate: string | null;
   error?: string;
@@ -39,6 +40,7 @@ export default function StationCard({
   city,
   mtd,
   hasLiveData,
+  ensemble,
   qpfSum,
   thresholds,
   lastDate,
@@ -46,7 +48,7 @@ export default function StationCard({
 }: StationCardProps) {
   const mtdValue = mtd ?? 0;
   const progressPct = Math.min((mtdValue / 5.0) * 100, 100);
-  const hasQpf = qpfSum !== null;
+  const hasForecast = ensemble !== null || qpfSum !== null;
 
   return (
     <div className="bg-white rounded-lg border border-gray-200 p-5">
@@ -99,8 +101,8 @@ export default function StationCard({
             <th className="text-right pb-1 font-medium">Need</th>
             <th className="text-right pb-1 font-medium">Base</th>
             <th className="text-right pb-1 font-medium">Clim.</th>
-            {hasQpf && (
-              <th className="text-right pb-1 font-medium">Blended</th>
+            {hasForecast && (
+              <th className="text-right pb-1 font-medium">Ensemble</th>
             )}
           </tr>
         </thead>
@@ -127,9 +129,9 @@ export default function StationCard({
               <td className="py-1.5 text-right">
                 <ProbabilityBadge value={t.climatologyProbability} />
               </td>
-              {hasQpf && (
+              {hasForecast && (
                 <td className="py-1.5 text-right">
-                  <ProbabilityBadge value={t.blendedProbability} />
+                  <ProbabilityBadge value={t.ensembleProbability} />
                 </td>
               )}
             </tr>
@@ -137,9 +139,21 @@ export default function StationCard({
         </tbody>
       </table>
 
-      {/* QPF line */}
+      {/* Forecast summary line */}
       <div className="text-xs text-gray-400">
-        7-day QPF: {qpfSum !== null ? `${qpfSum.toFixed(2)}"` : "unavailable"}
+        {ensemble ? (
+          <>
+            Ensemble QPF: {ensemble.stats.median.toFixed(2)}&quot;{" "}
+            <span className="text-gray-300">
+              ({ensemble.stats.p10.toFixed(2)}&quot; &ndash;{" "}
+              {ensemble.stats.p90.toFixed(2)}&quot;)
+            </span>
+          </>
+        ) : qpfSum !== null ? (
+          <>NWS QPF (fallback): {qpfSum.toFixed(2)}&quot;</>
+        ) : (
+          "Forecast unavailable"
+        )}
       </div>
     </div>
   );

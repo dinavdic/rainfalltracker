@@ -1,0 +1,77 @@
+export interface StationConfig {
+  code: string;
+  city: string;
+  cliParams: string;
+  ghcnId: string;
+  lat: number;
+  lon: number;
+}
+
+export interface GammaParams {
+  shape: number;
+  scale: number;
+  zero_fraction: number;
+}
+
+export interface DayDistribution {
+  percentiles: Record<string, number>;
+  gamma: GammaParams | null;
+  n_years: number;
+  mean: number;
+}
+
+export interface CumulativePercentiles {
+  p10: number;
+  p25: number;
+  p50: number;
+  p75: number;
+  p90: number;
+}
+
+export interface MonthDistribution {
+  days_in_month: number;
+  days: Record<string, DayDistribution>;
+  base_rates: Record<string, number>;
+  monthly_totals_percentiles: Record<string, number>;
+  cumulative_percentiles: Record<string, CumulativePercentiles>;
+}
+
+export interface StationHistorical {
+  city: string;
+  ghcn_id: string;
+  months: Record<string, MonthDistribution>;
+}
+
+export interface HistoricalData {
+  stations: Record<string, StationHistorical>;
+  generated_at: string;
+}
+
+export interface StationRainfallData {
+  mtd: number | null;
+  qpf7day: number[];
+  lastUpdated: string | null;
+  error?: string;
+}
+
+export interface RainfallApiResponse {
+  stations: Record<string, StationRainfallData>;
+  fetchedAt: string;
+}
+
+export interface ThresholdProbability {
+  threshold: number;
+  remainingNeeded: number | null; // null if already exceeded
+  baseRate: number;
+  blendedProbability: number;
+  climatologyProbability: number;
+}
+
+export interface StationProbabilities {
+  station: string;
+  month: number;
+  dayOfMonth: number;
+  mtd: number;
+  qpf7day: number[];
+  thresholds: ThresholdProbability[];
+}

@@ -1,0 +1,8 @@
+{
+  "crons": [
+    {
+      "path": "/api/fetch-rainfall",
+      "schedule": "0 */6 * * *"
+    }
+  ]
+}

@@ -39,8 +39,6 @@ STATIONS = {
 }
 
 IEM_BASE = "https://mesonet.agron.iastate.edu/cgi-bin/request/cli.py"
-START_DATE = "1991-01-01"
-END_DATE = "2024-12-31"
 THRESHOLDS = [1.0, 2.0, 3.0]
 
 DAYS_IN_MONTH = {1:31, 2:28, 3:31, 4:30, 5:31, 6:30, 7:31, 8:31, 9:30, 10:31, 11:30, 12:31}
@@ -50,8 +48,9 @@ def fetch_iem_cli_data(iem_code: str) -> list[dict]:
     """Download daily precipitation data from IEM CLI archive."""
     url = (
         f"{IEM_BASE}?station={iem_code}"
-        f"&startts={START_DATE}&endts={END_DATE}"
-        f"&product=cli&opt=comma"
+        f"&year1=1991&month1=1&day1=1"
+        f"&year2=2024&month2=12&day2=31"
+        f"&output=csv"
     )
     print(f"  Fetching {url}")
 

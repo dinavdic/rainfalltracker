@@ -96,3 +96,38 @@ export const STATIONS: StationConfig[] = [
 export const THRESHOLDS = [1.0, 2.0, 3.0, 4.0, 5.0];
 
 export const NWS_USER_AGENT = "RainfallTracker/1.0 (rainfall-tracker@example.com)";
+
+/**
+ * Kalshi series ticker candidates for each station.
+ * We try multiple patterns since the exact format isn't documented.
+ * The API route tries each and logs what it finds.
+ */
+export const KALSHI_SERIES_CANDIDATES: Record<string, string[]> = {
+  NYC: ["KXRAINNYCM", "KXRAINNYM", "KXRAINNYC"],
+  SFO: ["KXRAINSFOM", "KXRAINSFM", "KXRAINSFO"],
+  MIA: ["KXRAINMIAM", "KXRAINMIM", "KXRAINMIA"],
+  DEN: ["KXRAINDENM", "KXRAINDEM", "KXRAINDEN"],
+  MDW: ["KXRAINCHIM", "KXRAINMDWM", "KXRAINCHI"],
+  LAX: ["KXRAINLAXM", "KXRAINLAM", "KXRAINLAX"],
+  AUS: ["KXRAINAUSM", "KXRAINAUM", "KXRAINAUS"],
+  DFW: ["KXRAINDFWM", "KXRAINDFW", "KXRAINDAL"],
+  HOU: ["KXRAINHOUM", "KXRAINHOU", "KXRAINHTX"],
+  SEA: ["KXRAINSEAM", "KXRAINSEM", "KXRAINSEA"],
+};
+
+/**
+ * City name keywords to match Kalshi market titles to our stations.
+ * Used as fallback when ticker pattern matching fails.
+ */
+export const KALSHI_CITY_KEYWORDS: Record<string, string[]> = {
+  NYC: ["new york", "nyc", "central park"],
+  SFO: ["san francisco", "sfo"],
+  MIA: ["miami"],
+  DEN: ["denver"],
+  MDW: ["chicago", "midway"],
+  LAX: ["los angeles", "lax"],
+  AUS: ["austin"],
+  DFW: ["dallas", "fort worth", "dfw"],
+  HOU: ["houston"],
+  SEA: ["seattle"],
+};

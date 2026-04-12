@@ -4,6 +4,7 @@ import { useState, useEffect, useCallback } from "react";
 import {
   HistoricalData,
   RainfallApiResponse,
+  KalshiApiResponse,
   StationProbabilities,
 } from "@/lib/types";
 import { computeProbabilities } from "@/lib/probability";
@@ -24,6 +25,7 @@ function daysInMonth(month: number, year: number): number {
 export default function Dashboard() {
   const [historical, setHistorical] = useState<HistoricalData | null>(null);
   const [rainfall, setRainfall] = useState<RainfallApiResponse | null>(null);
+  const [kalshi, setKalshi] = useState<KalshiApiResponse | null>(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const [liveDataFailed, setLiveDataFailed] = useState(false);
@@ -47,17 +49,22 @@ export default function Dashboard() {
         return;
       }
 
-      // Then try the live IEM data via our API route
-      try {
-        const rainResp = await fetch("/api/fetch-rainfall");
-        if (rainResp.ok) {
-          setRainfall(await rainResp.json());
-        } else {
-          setLiveDataFailed(true);
-        }
-      } catch {
+      // Fetch live rainfall and Kalshi data in parallel
+      const [rainResult, kalshiResult] = await Promise.allSettled([
+        fetch("/api/fetch-rainfall"),
+        fetch("/api/fetch-kalshi"),
+      ]);
+
+      if (rainResult.status === "fulfilled" && rainResult.value.ok) {
+        setRainfall(await rainResult.value.json());
+      } else {
         setLiveDataFailed(true);
       }
+
+      if (kalshiResult.status === "fulfilled" && kalshiResult.value.ok) {
+        setKalshi(await kalshiResult.value.json());
+      }
+      // Kalshi failure is non-fatal — we just don't show Market/Edge columns
     } catch (e) {
       setError(`Error loading data: ${e instanceof Error ? e.message : String(e)}`);
     } finally {
@@ -164,6 +171,7 @@ export default function Dashboard() {
                     climatologyProbability: 0,
                   }))
                 }
+                kalshi={kalshi?.stations[station.code] ?? null}
                 lastDate={rainData?.lastUpdated ?? null}
                 error={rainData?.error}
               />
@@ -186,13 +194,14 @@ export default function Dashboard() {
         <footer className="mt-8 pt-6 border-t border-gray-200 text-xs text-gray-400">
           <p>
             Data sources: IEM CLI Archive for live MTD, GEFS ensemble via
-            Open-Meteo for probabilistic QPF, 1991–2024 historical CLI
-            distributions.
+            Open-Meteo for probabilistic QPF, Kalshi for market prices,
+            1991–2024 historical CLI distributions.
           </p>
           <p className="mt-1">
             Clim. = P(exceed | MTD, days remaining) using gamma CDF.
-            Ensemble = average P(exceed) across 31 GEFS members, with
-            climatology tail for days beyond the forecast horizon.
+            Ensemble = average P(exceed) across 31 GEFS members with
+            climatology tail. Market = Kalshi mid-price. Edge =
+            Ensemble &minus; Market.
           </p>
         </footer>
       </div>

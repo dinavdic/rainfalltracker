@@ -100,3 +100,24 @@ export interface StationProbabilities {
   ensemble: EnsembleData | null;
   thresholds: ThresholdProbability[];
 }
+
+// --- Kalshi market data ---
+
+export interface KalshiMarketPrice {
+  ticker: string;
+  lastPrice: number | null; // cents (0-100)
+  yesBid: number | null;
+  yesAsk: number | null;
+  volume: number;
+}
+
+export interface KalshiStationData {
+  thresholds: Record<string, KalshiMarketPrice>; // keyed by threshold like "1.0"
+  eventTicker: string | null; // the Kalshi event ticker for linking
+}
+
+export interface KalshiApiResponse {
+  stations: Record<string, KalshiStationData>;
+  fetchedAt: string;
+  discoveryLog: string[]; // ticker discovery debug info
+}

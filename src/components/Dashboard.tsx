@@ -26,6 +26,7 @@ export default function Dashboard() {
   const [rainfall, setRainfall] = useState<RainfallApiResponse | null>(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
+  const [liveDataFailed, setLiveDataFailed] = useState(false);
 
   const now = new Date();
   const month = now.getMonth() + 1;
@@ -36,24 +37,27 @@ export default function Dashboard() {
 
   const fetchData = useCallback(async () => {
     try {
-      // Fetch historical data and live rainfall in parallel
-      const [histResp, rainResp] = await Promise.all([
-        fetch("/data/historical-distributions.json"),
-        fetch("/api/fetch-rainfall"),
-      ]);
-
+      // Always fetch historical first — it's the static JSON, will always work
+      const histResp = await fetch("/data/historical-distributions.json");
       if (histResp.ok) {
-        const histData = await histResp.json();
-        setHistorical(histData);
+        setHistorical(await histResp.json());
       } else {
         setError("Failed to load historical data");
+        setLoading(false);
+        return;
       }
 
-      if (rainResp.ok) {
-        const rainData = await rainResp.json();
-        setRainfall(rainData);
+      // Then try the live IEM data via our API route
+      try {
+        const rainResp = await fetch("/api/fetch-rainfall");
+        if (rainResp.ok) {
+          setRainfall(await rainResp.json());
+        } else {
+          setLiveDataFailed(true);
+        }
+      } catch {
+        setLiveDataFailed(true);
       }
-      // Non-fatal if rainfall fetch fails; we'll show with mock/empty data
     } catch (e) {
       setError(`Error loading data: ${e instanceof Error ? e.message : String(e)}`);
     } finally {
@@ -87,7 +91,6 @@ export default function Dashboard() {
 
   for (const station of STATIONS) {
     const rainData = rainfall?.stations[station.code];
-    // Use live MTD if available, otherwise use mock data for development
     const mtd = rainData?.mtd ?? null;
     const qpf7day = rainData?.qpf7day ?? [0, 0, 0, 0, 0, 0, 0];
 
@@ -105,9 +108,11 @@ export default function Dashboard() {
     }
   }
 
+  const hasLiveData = rainfall && Object.values(rainfall.stations).some((s) => s.mtd !== null);
+
   const lastUpdated = rainfall?.fetchedAt
     ? new Date(rainfall.fetchedAt).toLocaleString()
-    : "—";
+    : null;
 
   return (
     <div className="min-h-screen bg-gray-50">
@@ -119,8 +124,18 @@ export default function Dashboard() {
           </h1>
           <p className="text-sm text-gray-500 mt-1">
             {daysRemaining} day{daysRemaining !== 1 ? "s" : ""} remaining
-            &middot; Last updated: {lastUpdated}
+            {lastUpdated && <> &middot; Last updated: {lastUpdated}</>}
           </p>
+          {liveDataFailed && (
+            <p className="text-xs text-amber-600 mt-1">
+              Live MTD data unavailable — showing climatological probabilities only
+            </p>
+          )}
+          {!hasLiveData && !liveDataFailed && rainfall && (
+            <p className="text-xs text-amber-600 mt-1">
+              No MTD data for current month yet — showing climatological probabilities
+            </p>
+          )}
         </header>
 
         {/* Station cards grid */}
@@ -128,10 +143,6 @@ export default function Dashboard() {
           {STATIONS.map((station) => {
             const probs = stationProbs[station.code];
             const rainData = rainfall?.stations[station.code];
-            const qpfSum = (rainData?.qpf7day ?? [0]).reduce(
-              (a: number, b: number) => a + b,
-              0
-            );
 
             return (
               <StationCard
@@ -139,7 +150,7 @@ export default function Dashboard() {
                 code={station.code}
                 city={station.city}
                 mtd={mtdValues[station.code]}
-                qpfSum={qpfSum}
+                hasLiveData={rainData?.mtd !== null && rainData?.mtd !== undefined}
                 thresholds={
                   probs?.thresholds ?? [
                     {
@@ -165,6 +176,7 @@ export default function Dashboard() {
                     },
                   ]
                 }
+                lastDate={rainData?.lastUpdated ?? null}
                 error={rainData?.error}
               />
             );
@@ -185,13 +197,13 @@ export default function Dashboard() {
         {/* Footer */}
         <footer className="mt-8 pt-6 border-t border-gray-200 text-xs text-gray-400">
           <p>
-            Data sources: NWS Climate Reports (CLI), NOAA GHCN-Daily (1991–2024
-            historical), NWS Quantitative Precipitation Forecasts.
+            Data sources: IEM CLI Archive (mesonet.agron.iastate.edu) for live
+            MTD and 1991–2024 historical distributions.
           </p>
           <p className="mt-1">
-            Probabilities are computed using gamma distribution fits to
-            historical remaining-period rainfall, blended with 7-day QPF
-            forecasts.
+            Conditional probabilities: given current MTD and days remaining,
+            P(month total &gt; threshold) is computed using gamma distribution
+            fits to historical remaining-period rainfall.
           </p>
         </footer>
       </div>

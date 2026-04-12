@@ -6,8 +6,9 @@ interface StationCardProps {
   code: string;
   city: string;
   mtd: number | null;
-  qpfSum: number;
+  hasLiveData: boolean;
   thresholds: ThresholdProbability[];
+  lastDate: string | null;
   error?: string;
 }
 
@@ -36,8 +37,9 @@ export default function StationCard({
   code,
   city,
   mtd,
-  qpfSum,
+  hasLiveData,
   thresholds,
+  lastDate,
   error,
 }: StationCardProps) {
   const mtdValue = mtd ?? 0;
@@ -45,23 +47,38 @@ export default function StationCard({
 
   return (
     <div className="bg-white rounded-lg border border-gray-200 p-5">
-      <div className="flex items-baseline gap-2 mb-3">
-        <span className="text-2xl font-bold text-gray-900">{code}</span>
-        <span className="text-sm text-gray-500">{city}</span>
+      {/* Station header */}
+      <div className="flex items-baseline justify-between mb-3">
+        <div className="flex items-baseline gap-2">
+          <span className="text-2xl font-bold text-gray-900">{code}</span>
+          <span className="text-sm text-gray-500">{city}</span>
+        </div>
+        {hasLiveData && lastDate && (
+          <span className="text-[10px] text-gray-400">as of {lastDate}</span>
+        )}
       </div>
 
-      {error && mtd === null ? (
-        <div className="text-sm text-gray-400 mb-3">Data unavailable</div>
+      {/* MTD display */}
+      {error && !hasLiveData ? (
+        <div className="mb-4">
+          <span className="text-3xl font-semibold text-gray-300">—</span>
+          <span className="text-sm text-gray-400 ml-1">MTD unavailable</span>
+        </div>
       ) : (
         <>
-          <div className="mb-3">
-            <span className="text-3xl font-semibold text-gray-900">
+          <div className="mb-1">
+            <span className="text-4xl font-bold tabular-nums text-gray-900">
               {mtdValue.toFixed(2)}
             </span>
-            <span className="text-sm text-gray-500 ml-1">inches MTD</span>
+            <span className="text-sm text-gray-500 ml-1">&quot;</span>
+            {!hasLiveData && (
+              <span className="text-[10px] text-gray-400 ml-2">
+                no live data
+              </span>
+            )}
           </div>
 
-          {/* Progress bar */}
+          {/* Progress bar toward 3" */}
           <div className="w-full bg-gray-100 rounded-full h-1.5 mb-4">
             <div
               className="bg-blue-500 h-1.5 rounded-full transition-all"
@@ -72,41 +89,44 @@ export default function StationCard({
       )}
 
       {/* Thresholds table */}
-      <table className="w-full text-sm mb-3">
+      <table className="w-full text-sm">
         <thead>
           <tr className="text-gray-500 text-xs">
             <th className="text-left pb-1 font-medium">Threshold</th>
             <th className="text-right pb-1 font-medium">Need</th>
-            <th className="text-right pb-1 font-medium">Base</th>
-            <th className="text-right pb-1 font-medium">P(exceed)</th>
+            <th className="text-right pb-1 font-medium">Base rate</th>
+            <th className="text-right pb-1 font-medium">
+              {hasLiveData ? "Cond. P" : "Clim. P"}
+            </th>
           </tr>
         </thead>
         <tbody>
           {thresholds.map((t) => (
             <tr key={t.threshold} className="border-t border-gray-50">
-              <td className="py-1.5 text-gray-700">{`>${t.threshold}"`}</td>
+              <td className="py-1.5 text-gray-700 font-medium">
+                &gt;{t.threshold}&quot;
+              </td>
               <td className="py-1.5 text-right text-gray-600">
                 {t.remainingNeeded === null ? (
-                  <span className="text-green-600 font-medium">&mdash;</span>
+                  <span className="text-green-600 text-xs font-semibold">
+                    exceeded
+                  </span>
                 ) : (
-                  `${t.remainingNeeded.toFixed(2)}"`
+                  <span className="tabular-nums">
+                    {t.remainingNeeded.toFixed(2)}&quot;
+                  </span>
                 )}
               </td>
-              <td className="py-1.5 text-right text-gray-500">
+              <td className="py-1.5 text-right text-gray-400 tabular-nums">
                 {Math.round(t.baseRate * 100)}%
               </td>
               <td className="py-1.5 text-right">
-                <ProbabilityBadge value={t.blendedProbability} />
+                <ProbabilityBadge value={t.climatologyProbability} />
               </td>
             </tr>
           ))}
         </tbody>
       </table>
-
-      {/* QPF line */}
-      <div className="text-xs text-gray-400">
-        7-day QPF: {qpfSum.toFixed(2)}&quot;
-      </div>
     </div>
   );
 }

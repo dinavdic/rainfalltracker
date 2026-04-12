@@ -1,12 +1,17 @@
 #!/usr/bin/env python3
 """
-Historical rainfall data pipeline using IEM CLI archive.
+Historical rainfall data pipeline using IEM CLI JSON archive.
 
 Downloads daily precipitation data from the Iowa Environmental Mesonet (IEM)
-CLI archive for 10 US stations (1991-2024). This data matches the exact
+CLI JSON endpoint for 10 US stations (1991-2024). This data matches the exact
 NWS CLI reports used for Kalshi settlement.
 
-IEM CLI archive: https://mesonet.agron.iastate.edu/cgi-bin/request/cli.py
+IEM CLI JSON endpoint: https://mesonet.agron.iastate.edu/json/cli.py?station=KSFO&year=2024
+
+Station codes use the K prefix (KSFO, KMIA, etc.).
+Data is fetched one year at a time. Each response contains a "results" array
+with entries having: valid (date), precip (daily inches), precip_month (MTD).
+Values of "M" indicate missing data.
 
 Computes empirical distributions of remaining-period rainfall for each
 station-month-day combination, fits gamma distributions, and outputs a JSON
@@ -14,9 +19,6 @@ file for the frontend.
 """
 
 import json
-import csv
-import io
-import sys
 import os
 import time
 import math
@@ -26,80 +28,92 @@ from urllib.error import URLError, HTTPError
 import numpy as np
 from scipy import stats
 
-# Station codes match IEM CLI identifiers and Kalshi settlement stations.
+# Station codes match Kalshi settlement stations.
+# IEM JSON endpoint requires K-prefixed ICAO codes.
 STATIONS = {
-    "SFO": {"city": "San Francisco",  "iem_code": "SFO"},
-    "LAX": {"city": "Los Angeles",    "iem_code": "LAX"},
-    "MIA": {"city": "Miami",          "iem_code": "MIA"},
-    "DEN": {"city": "Denver",         "iem_code": "DEN"},
-    "MDW": {"city": "Chicago",        "iem_code": "MDW"},
-    "NYC": {"city": "New York",       "iem_code": "NYC"},
-    "SEA": {"city": "Seattle",        "iem_code": "SEA"},
-    "AUS": {"city": "Austin",         "iem_code": "AUS"},
-    "DFW": {"city": "Dallas-Fort Worth", "iem_code": "DFW"},
-    "HOU": {"city": "Houston",        "iem_code": "HOU"},
+    "SFO": {"city": "San Francisco",     "icao": "KSFO"},
+    "LAX": {"city": "Los Angeles",        "icao": "KLAX"},
+    "MIA": {"city": "Miami",              "icao": "KMIA"},
+    "DEN": {"city": "Denver",             "icao": "KDEN"},
+    "MDW": {"city": "Chicago",            "icao": "KMDW"},
+    "NYC": {"city": "New York",           "icao": "KNYC"},
+    "SEA": {"city": "Seattle",            "icao": "KSEA"},
+    "AUS": {"city": "Austin",             "icao": "KAUS"},
+    "DFW": {"city": "Dallas-Fort Worth",  "icao": "KDFW"},
+    "HOU": {"city": "Houston",            "icao": "KHOU"},
 }
 
-IEM_BASE = "https://mesonet.agron.iastate.edu/cgi-bin/request/cli.py"
+IEM_BASE = "https://mesonet.agron.iastate.edu/json/cli.py"
+START_YEAR = 1991
+END_YEAR = 2024
 THRESHOLDS = [1.0, 2.0, 3.0]
 
 DAYS_IN_MONTH = {1:31, 2:28, 3:31, 4:30, 5:31, 6:30, 7:31, 8:31, 9:30, 10:31, 11:30, 12:31}
 
 
-def fetch_iem_cli_data(iem_code: str) -> list[dict]:
-    """Download daily precipitation data from IEM CLI archive."""
-    url = (
-        f"{IEM_BASE}?station={iem_code}"
-        f"&year1=1991&month1=1&day1=1"
-        f"&year2=2024&month2=12&day2=31"
-        f"&output=csv"
-    )
-    print(f"  Fetching {url}")
+def fetch_iem_year(icao: str, year: int) -> list[dict]:
+    """Fetch one year of CLI data from the IEM JSON endpoint."""
+    url = f"{IEM_BASE}?station={icao}&year={year}"
 
     for attempt in range(5):
         try:
             req = Request(url, headers={
                 "User-Agent": "RainfallTracker/1.0 (contact@example.com)"
             })
-            with urlopen(req, timeout=180) as resp:
+            with urlopen(req, timeout=60) as resp:
                 raw = resp.read().decode("utf-8")
+            data = json.loads(raw)
             break
         except (URLError, HTTPError, TimeoutError) as e:
             wait = 2 ** (attempt + 1)
-            print(f"  Attempt {attempt+1} failed ({e}), retrying in {wait}s...")
+            print(f"    Attempt {attempt+1} failed ({e}), retrying in {wait}s...")
             time.sleep(wait)
+        except json.JSONDecodeError as e:
+            print(f"    JSON decode error for {year}: {e}")
+            return []
     else:
-        print(f"  FAILED to fetch data for {iem_code} after 5 attempts")
+        print(f"    FAILED to fetch {icao} year {year} after 5 attempts")
         return []
 
-    reader = csv.DictReader(io.StringIO(raw))
+    results = data.get("results", [])
     records = []
-    for row in reader:
+    for entry in results:
         try:
-            date_str = row.get("valid", "").strip()
-            prcp_str = row.get("precip", "").strip()
+            date_str = entry.get("valid", "")
+            precip_val = entry.get("precip")
 
-            if not date_str or not prcp_str:
+            if not date_str:
                 continue
 
-            # IEM uses "M" for missing and "T" for trace
-            if prcp_str in ("M", "None", ""):
+            # "M" means missing
+            if precip_val is None or precip_val == "M":
                 continue
-            if prcp_str == "T":
-                prcp = 0.0  # Trace = effectively 0 for accumulation
-            else:
-                prcp = float(prcp_str)
 
+            prcp = float(precip_val)
             if prcp < 0:
                 prcp = 0.0
 
-            year, month, day = int(date_str[:4]), int(date_str[5:7]), int(date_str[8:10])
-            records.append({"year": year, "month": month, "day": day, "prcp": prcp})
-        except (ValueError, KeyError, IndexError):
+            y, m, d = int(date_str[:4]), int(date_str[5:7]), int(date_str[8:10])
+            records.append({"year": y, "month": m, "day": d, "prcp": prcp})
+        except (ValueError, TypeError, IndexError):
             continue
 
-    print(f"  Got {len(records)} daily records")
     return records
+
+
+def fetch_iem_cli_data(icao: str) -> list[dict]:
+    """Download all years of CLI data for a station."""
+    all_records = []
+    for year in range(START_YEAR, END_YEAR + 1):
+        records = fetch_iem_year(icao, year)
+        all_records.extend(records)
+        if year % 10 == 0 or year == END_YEAR:
+            print(f"    {year}: {len(records)} days (total so far: {len(all_records)})")
+        # Small delay to be polite to the IEM server
+        time.sleep(0.2)
+
+    print(f"  Total: {len(all_records)} daily records")
+    return all_records
 
 
 def organize_by_month_year(records: list[dict]) -> dict:
@@ -228,13 +242,13 @@ def main():
     output = {
         "stations": {},
         "generated_at": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
-        "source": "IEM CLI Archive (mesonet.agron.iastate.edu)",
+        "source": "IEM CLI JSON Archive (mesonet.agron.iastate.edu/json/cli.py)",
     }
 
     for station_code, info in STATIONS.items():
-        print(f"\nProcessing {station_code} ({info['city']}, IEM code: {info['iem_code']})...")
+        print(f"\nProcessing {station_code} ({info['city']}, ICAO: {info['icao']})...")
 
-        records = fetch_iem_cli_data(info["iem_code"])
+        records = fetch_iem_cli_data(info["icao"])
         if not records:
             print(f"  Skipping {station_code} - no data")
             continue
@@ -247,7 +261,7 @@ def main():
 
         output["stations"][station_code] = {
             "city": info["city"],
-            "iem_code": info["iem_code"],
+            "iem_code": info["icao"],
             "months": distributions,
         }
 

@@ -1,11 +1,12 @@
 import { NextRequest, NextResponse } from "next/server";
-import { STATIONS } from "@/lib/stations";
-import { RainfallApiResponse, StationRainfallData } from "@/lib/types";
+import { STATIONS, NWS_USER_AGENT } from "@/lib/stations";
+import { RainfallApiResponse, StationRainfallData, NWSGridInfo } from "@/lib/types";
 import { saveRainfallData, loadRainfallData, isCacheFresh } from "@/lib/data-store";
 
 export const dynamic = "force-dynamic";
 
 const IEM_JSON_BASE = "https://mesonet.agron.iastate.edu/json/cli.py";
+const NWS_GRIDPOINTS_BASE = "https://api.weather.gov/gridpoints";
 
 interface IEMResult {
   valid: string;
@@ -32,7 +33,7 @@ async function fetchIEMMTD(
   const url = `${IEM_JSON_BASE}?station=${icao}&year=${year}`;
 
   const resp = await fetch(url, {
-    headers: { "User-Agent": "RainfallTracker/1.0 (contact@example.com)" },
+    headers: { "User-Agent": NWS_USER_AGENT },
     signal: AbortSignal.timeout(15000),
   });
 
@@ -43,7 +44,6 @@ async function fetchIEMMTD(
   const data: IEMResponse = await resp.json();
   const results = data.results || [];
 
-  // Filter to current month and find the most recent entry with a valid precip_month
   let latestMtd: number | null = null;
   let latestDate: string | null = null;
 
@@ -62,7 +62,6 @@ async function fetchIEMMTD(
     const val = typeof precipMonth === "string" ? parseFloat(precipMonth) : precipMonth;
     if (isNaN(val)) continue;
 
-    // Keep the latest (results are generally in order, but be safe)
     if (latestDate === null || dateStr > latestDate) {
       latestMtd = val;
       latestDate = dateStr;
@@ -70,6 +69,80 @@ async function fetchIEMMTD(
   }
 
   return { mtd: latestMtd, lastDate: latestDate };
+}
+
+/**
+ * Fetch 7-day QPF from NWS gridpoints raw data endpoint.
+ *
+ * Uses https://api.weather.gov/gridpoints/{office}/{gridX},{gridY}
+ * which returns quantitativePrecipitation as a time series of expected
+ * precipitation in 6-hour windows. Sums values for the next 7 days.
+ *
+ * Returns the total QPF in inches for the next 7 days.
+ */
+async function fetchQPF(grid: NWSGridInfo): Promise<number> {
+  const url = `${NWS_GRIDPOINTS_BASE}/${grid.office}/${grid.gridX},${grid.gridY}`;
+
+  const resp = await fetch(url, {
+    headers: {
+      "User-Agent": NWS_USER_AGENT,
+      Accept: "application/geo+json",
+    },
+    signal: AbortSignal.timeout(15000),
+  });
+
+  if (!resp.ok) {
+    throw new Error(`NWS gridpoints failed: ${resp.status} ${resp.statusText}`);
+  }
+
+  const data = await resp.json();
+
+  // quantitativePrecipitation is in properties.quantitativePrecipitation
+  // It has a "values" array with { validTime, value } entries
+  // validTime is an ISO 8601 interval like "2026-04-12T06:00:00+00:00/PT6H"
+  // value is in mm (NWS default unit for QPF)
+  const qpfProp = data.properties?.quantitativePrecipitation;
+  if (!qpfProp || !qpfProp.values) {
+    throw new Error("No quantitativePrecipitation in gridpoints response");
+  }
+
+  const now = new Date();
+  const sevenDaysOut = new Date(now.getTime() + 7 * 24 * 60 * 60 * 1000);
+
+  // Determine the unit — NWS returns "wmoUnit:mm" or "unit:mm" etc.
+  const uom: string = qpfProp.uom || "";
+  const isMm = uom.includes("mm");
+
+  let totalMm = 0;
+
+  for (const entry of qpfProp.values) {
+    const validTime: string = entry.validTime || "";
+    const value: number | null = entry.value;
+
+    if (value === null || value === undefined || value <= 0) continue;
+
+    // Parse the start time from the ISO interval
+    const slashIdx = validTime.indexOf("/");
+    const startStr = slashIdx > 0 ? validTime.substring(0, slashIdx) : validTime;
+
+    let startDate: Date;
+    try {
+      startDate = new Date(startStr);
+    } catch {
+      continue;
+    }
+
+    if (isNaN(startDate.getTime())) continue;
+
+    // Only include periods within the next 7 days
+    if (startDate >= now && startDate < sevenDaysOut) {
+      totalMm += value;
+    }
+  }
+
+  // Convert mm to inches if needed
+  const totalInches = isMm ? totalMm / 25.4 : totalMm;
+  return Math.round(totalInches * 100) / 100;
 }
 
 export async function GET(request: NextRequest) {
@@ -85,28 +158,37 @@ export async function GET(request: NextRequest) {
 
   const stations: Record<string, StationRainfallData> = {};
 
-  // Fetch MTD data for all stations in parallel from IEM
+  // Fetch MTD and QPF data for all stations in parallel
   const results = await Promise.allSettled(
     STATIONS.map(async (station) => {
-      try {
-        const { mtd, lastDate } = await fetchIEMMTD(station.iemCode);
-        const data: StationRainfallData = {
-          mtd,
-          qpf7day: [0, 0, 0, 0, 0, 0, 0],
-          lastUpdated: lastDate,
-        };
-        return { code: station.code, data };
-      } catch (e) {
-        return {
-          code: station.code,
-          data: {
-            mtd: null,
-            qpf7day: [0, 0, 0, 0, 0, 0, 0],
-            lastUpdated: null,
-            error: `IEM fetch error: ${e instanceof Error ? e.message : String(e)}`,
-          } as StationRainfallData,
-        };
+      // Fetch IEM MTD and NWS QPF in parallel
+      const [iemResult, qpfResult] = await Promise.allSettled([
+        fetchIEMMTD(station.iemCode),
+        fetchQPF(station.nwsGrid),
+      ]);
+
+      const iem =
+        iemResult.status === "fulfilled"
+          ? iemResult.value
+          : { mtd: null, lastDate: null };
+      const qpfSum =
+        qpfResult.status === "fulfilled" ? qpfResult.value : 0;
+
+      const data: StationRainfallData = {
+        mtd: iem.mtd,
+        qpf7day: [], // We store the aggregate sum, not daily breakdown
+        qpfSum,
+        lastUpdated: iem.lastDate,
+      };
+
+      if (iemResult.status === "rejected") {
+        data.error = `IEM fetch error: ${iemResult.reason}`;
       }
+      if (qpfResult.status === "rejected") {
+        data.qpfError = `QPF fetch error: ${qpfResult.reason}`;
+      }
+
+      return { code: station.code, data };
     })
   );
 

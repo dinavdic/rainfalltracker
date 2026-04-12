@@ -7,6 +7,7 @@ interface StationCardProps {
   city: string;
   mtd: number | null;
   hasLiveData: boolean;
+  qpfSum: number;
   thresholds: ThresholdProbability[];
   lastDate: string | null;
   error?: string;
@@ -38,12 +39,14 @@ export default function StationCard({
   city,
   mtd,
   hasLiveData,
+  qpfSum,
   thresholds,
   lastDate,
   error,
 }: StationCardProps) {
   const mtdValue = mtd ?? 0;
   const progressPct = Math.min((mtdValue / 5.0) * 100, 100);
+  const hasQpf = qpfSum > 0;
 
   return (
     <div className="bg-white rounded-lg border border-gray-200 p-5">
@@ -61,7 +64,7 @@ export default function StationCard({
       {/* MTD display */}
       {error && !hasLiveData ? (
         <div className="mb-4">
-          <span className="text-3xl font-semibold text-gray-300">—</span>
+          <span className="text-3xl font-semibold text-gray-300">&mdash;</span>
           <span className="text-sm text-gray-400 ml-1">MTD unavailable</span>
         </div>
       ) : (
@@ -78,7 +81,7 @@ export default function StationCard({
             )}
           </div>
 
-          {/* Progress bar toward 3" */}
+          {/* Progress bar toward 5" */}
           <div className="w-full bg-gray-100 rounded-full h-1.5 mb-4">
             <div
               className="bg-blue-500 h-1.5 rounded-full transition-all"
@@ -89,15 +92,16 @@ export default function StationCard({
       )}
 
       {/* Thresholds table */}
-      <table className="w-full text-sm">
+      <table className="w-full text-sm mb-3">
         <thead>
           <tr className="text-gray-500 text-xs">
             <th className="text-left pb-1 font-medium">Threshold</th>
             <th className="text-right pb-1 font-medium">Need</th>
-            <th className="text-right pb-1 font-medium">Base rate</th>
-            <th className="text-right pb-1 font-medium">
-              {hasLiveData ? "Cond. P" : "Clim. P"}
-            </th>
+            <th className="text-right pb-1 font-medium">Base</th>
+            <th className="text-right pb-1 font-medium">Clim.</th>
+            {hasQpf && (
+              <th className="text-right pb-1 font-medium">Blended</th>
+            )}
           </tr>
         </thead>
         <tbody>
@@ -123,10 +127,20 @@ export default function StationCard({
               <td className="py-1.5 text-right">
                 <ProbabilityBadge value={t.climatologyProbability} />
               </td>
+              {hasQpf && (
+                <td className="py-1.5 text-right">
+                  <ProbabilityBadge value={t.blendedProbability} />
+                </td>
+              )}
             </tr>
           ))}
         </tbody>
       </table>
+
+      {/* QPF line */}
+      <div className="text-xs text-gray-400">
+        7-day QPF: {hasQpf ? `${qpfSum.toFixed(2)}"` : "unavailable"}
+      </div>
     </div>
   );
 }

@@ -92,7 +92,7 @@ export default function Dashboard() {
   for (const station of STATIONS) {
     const rainData = rainfall?.stations[station.code];
     const mtd = rainData?.mtd ?? null;
-    const qpf7day = rainData?.qpf7day ?? [0, 0, 0, 0, 0, 0, 0];
+    const qpfSum = rainData?.qpfSum ?? 0;
 
     mtdValues[station.code] = mtd;
 
@@ -102,7 +102,7 @@ export default function Dashboard() {
         month,
         dayOfMonth,
         mtd ?? 0,
-        qpf7day,
+        qpfSum,
         historical
       );
     }
@@ -144,6 +144,8 @@ export default function Dashboard() {
             const probs = stationProbs[station.code];
             const rainData = rainfall?.stations[station.code];
 
+            const qpfSum = rainData?.qpfSum ?? 0;
+
             return (
               <StationCard
                 key={station.code}
@@ -151,6 +153,7 @@ export default function Dashboard() {
                 city={station.city}
                 mtd={mtdValues[station.code]}
                 hasLiveData={rainData?.mtd !== null && rainData?.mtd !== undefined}
+                qpfSum={qpfSum}
                 thresholds={
                   probs?.thresholds ?? THRESHOLDS.map((t) => ({
                     threshold: t,
@@ -181,13 +184,14 @@ export default function Dashboard() {
         {/* Footer */}
         <footer className="mt-8 pt-6 border-t border-gray-200 text-xs text-gray-400">
           <p>
-            Data sources: IEM CLI Archive (mesonet.agron.iastate.edu) for live
-            MTD and 1991–2024 historical distributions.
+            Data sources: IEM CLI Archive for live MTD, NWS api.weather.gov for
+            7-day QPF, 1991–2024 historical CLI distributions.
           </p>
           <p className="mt-1">
-            Conditional probabilities: given current MTD and days remaining,
-            P(month total &gt; threshold) is computed using gamma distribution
-            fits to historical remaining-period rainfall.
+            Clim. P = P(exceed | MTD, days remaining) using gamma CDF on
+            historical remaining-period rainfall. Blended P folds in the 7-day
+            QPF as a near-certain forecast and applies climatology only to
+            the remaining days beyond the forecast window.
           </p>
         </footer>
       </div>

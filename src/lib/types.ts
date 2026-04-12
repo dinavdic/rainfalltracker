@@ -1,3 +1,9 @@
+export interface NWSGridInfo {
+  office: string;
+  gridX: number;
+  gridY: number;
+}
+
 export interface StationConfig {
   code: string;
   city: string;
@@ -5,6 +11,7 @@ export interface StationConfig {
   iemCode: string;
   lat: number;
   lon: number;
+  nwsGrid: NWSGridInfo;
 }
 
 export interface GammaParams {
@@ -50,8 +57,10 @@ export interface HistoricalData {
 export interface StationRainfallData {
   mtd: number | null;
   qpf7day: number[];
+  qpfSum: number;
   lastUpdated: string | null;
   error?: string;
+  qpfError?: string;
 }
 
 export interface RainfallApiResponse {
@@ -72,6 +81,6 @@ export interface StationProbabilities {
   month: number;
   dayOfMonth: number;
   mtd: number;
-  qpf7day: number[];
+  qpfSum: number;
   thresholds: ThresholdProbability[];
 }

@@ -33,7 +33,7 @@ function daysInMonth(month: number): number {
  * @param month - Current month (1-12)
  * @param dayOfMonth - Current day of month (1-31)
  * @param mtd - Month-to-date rainfall in inches
- * @param qpf7day - Array of 7-day quantitative precipitation forecast values
+ * @param qpfSum - 7-day quantitative precipitation forecast total (inches), 0 if unavailable
  * @param historical - The full historical distributions data
  */
 export function computeProbabilities(
@@ -41,7 +41,7 @@ export function computeProbabilities(
   month: number,
   dayOfMonth: number,
   mtd: number,
-  qpf7day: number[],
+  qpfSum: number,
   historical: HistoricalData
 ): StationProbabilities {
   const stationData = historical.stations[station];
@@ -49,16 +49,16 @@ export function computeProbabilities(
 
   const dim = daysInMonth(month);
   const daysRemaining = dim - dayOfMonth;
-  const qpfSum = qpf7day.reduce((a, b) => a + b, 0);
 
-  // Days covered by QPF forecast (up to 7, but not past end of month)
+  // Forecast period: next 7 days (or fewer if near month end)
   const forecastDays = Math.min(7, daysRemaining);
-  // Days after the forecast period through end of month
+  // Climatology period: days after the forecast window through end of month
   const climatologyDays = daysRemaining - forecastDays;
+
+  const hasQpf = qpfSum > 0;
 
   const thresholds: ThresholdProbability[] = THRESHOLDS.map((threshold) => {
     // Base rate: unconditional probability that the full month exceeds this threshold
-    // JSON keys are "1.0", "2.0" etc — must use toFixed(1), not String() which drops the decimal
     const baseRate = monthData?.base_rates[threshold.toFixed(1)] ?? 0;
 
     const remainingNeeded = threshold - mtd;
@@ -74,7 +74,8 @@ export function computeProbabilities(
       };
     }
 
-    // Pure climatology: use gamma distribution for remaining period from current day
+    // --- Pure climatology probability ---
+    // Uses gamma distribution for the full remaining period from current day
     let climatologyProbability = 0;
     const dayKey = String(dayOfMonth);
     const dayDist = monthData?.days[dayKey];
@@ -83,31 +84,37 @@ export function computeProbabilities(
       climatologyProbability = gammaSurvival(remainingNeeded, dayDist.gamma);
     }
 
-    // Blended model: QPF as point estimate + climatology for remaining
-    let blendedProbability = 0;
+    // --- Blended probability (QPF + climatology) ---
+    // Split remaining days: forecast period uses QPF sum as ~deterministic,
+    // climatology period uses gamma distribution for just those remaining days.
+    // P(exceed) = P(QPF_sum + climatology_remainder > remaining_needed)
+    //           = P(climatology_remainder > remaining_needed - QPF_sum)
+    let blendedProbability = climatologyProbability; // fallback if no QPF
 
-    if (climatologyDays <= 0) {
-      // All remaining days are covered by QPF
-      blendedProbability = qpfSum >= remainingNeeded ? 0.95 : 0.05;
-    } else {
-      // Need climatology for the post-forecast period
-      const neededFromClimatology = remainingNeeded - qpfSum;
+    if (hasQpf) {
+      const neededAfterQpf = remainingNeeded - qpfSum;
 
-      if (neededFromClimatology <= 0) {
-        // QPF alone is enough
-        blendedProbability = 0.95;
+      if (neededAfterQpf <= 0) {
+        // QPF alone covers the threshold
+        blendedProbability = 0.99;
+      } else if (climatologyDays <= 0) {
+        // All remaining days are within the QPF window — no climatology period
+        // QPF wasn't enough, so probability is very low
+        blendedProbability = 0.05;
       } else {
-        // Use gamma distribution for the climatology period
-        // The climatology period starts at dayOfMonth + forecastDays
+        // Use gamma distribution for the climatology period (day 8+ through EOM)
         const climatologyStartDay = dayOfMonth + forecastDays;
         const climatologyDayKey = String(climatologyStartDay);
         const climatologyDist = monthData?.days[climatologyDayKey];
 
         if (climatologyDist?.gamma) {
           blendedProbability = gammaSurvival(
-            neededFromClimatology,
+            neededAfterQpf,
             climatologyDist.gamma
           );
+        } else {
+          // No gamma fit for that day — fall back to pure climatology
+          blendedProbability = climatologyProbability;
         }
       }
     }
@@ -127,7 +134,7 @@ export function computeProbabilities(
     month,
     dayOfMonth,
     mtd,
-    qpf7day,
+    qpfSum,
     thresholds,
   };
 }

@@ -8,6 +8,7 @@ export const STATIONS: StationConfig[] = [
     iemCode: "SFO",
     lat: 37.6213,
     lon: -122.379,
+    nwsGrid: { office: "MTR", gridX: 88, gridY: 126 },
   },
   {
     code: "LAX",
@@ -16,6 +17,7 @@ export const STATIONS: StationConfig[] = [
     iemCode: "LAX",
     lat: 33.9425,
     lon: -118.4081,
+    nwsGrid: { office: "LOX", gridX: 149, gridY: 48 },
   },
   {
     code: "MIA",
@@ -24,6 +26,7 @@ export const STATIONS: StationConfig[] = [
     iemCode: "MIA",
     lat: 25.7959,
     lon: -80.287,
+    nwsGrid: { office: "MFL", gridX: 109, gridY: 50 },
   },
   {
     code: "DEN",
@@ -32,6 +35,7 @@ export const STATIONS: StationConfig[] = [
     iemCode: "DEN",
     lat: 39.8561,
     lon: -104.6737,
+    nwsGrid: { office: "BOU", gridX: 62, gridY: 60 },
   },
   {
     code: "MDW",
@@ -40,6 +44,7 @@ export const STATIONS: StationConfig[] = [
     iemCode: "MDW",
     lat: 41.7868,
     lon: -87.7522,
+    nwsGrid: { office: "LOT", gridX: 74, gridY: 70 },
   },
   {
     code: "NYC",
@@ -48,6 +53,7 @@ export const STATIONS: StationConfig[] = [
     iemCode: "NYC",
     lat: 40.7829,
     lon: -73.9654,
+    nwsGrid: { office: "OKX", gridX: 33, gridY: 37 },
   },
   {
     code: "SEA",
@@ -56,6 +62,7 @@ export const STATIONS: StationConfig[] = [
     iemCode: "SEA",
     lat: 47.4502,
     lon: -122.3088,
+    nwsGrid: { office: "SEW", gridX: 124, gridY: 67 },
   },
   {
     code: "AUS",
@@ -64,6 +71,7 @@ export const STATIONS: StationConfig[] = [
     iemCode: "AUS",
     lat: 30.1945,
     lon: -97.6699,
+    nwsGrid: { office: "EWX", gridX: 154, gridY: 91 },
   },
   {
     code: "DFW",
@@ -72,6 +80,7 @@ export const STATIONS: StationConfig[] = [
     iemCode: "DFW",
     lat: 32.8998,
     lon: -97.0403,
+    nwsGrid: { office: "FWD", gridX: 80, gridY: 108 },
   },
   {
     code: "HOU",
@@ -80,9 +89,10 @@ export const STATIONS: StationConfig[] = [
     iemCode: "HOU",
     lat: 29.6454,
     lon: -95.2789,
+    nwsGrid: { office: "HGX", gridX: 65, gridY: 97 },
   },
 ];
 
 export const THRESHOLDS = [1.0, 2.0, 3.0, 4.0, 5.0];
 
-export const NWS_USER_AGENT = "RainfallTracker/1.0 (contact@example.com)";
+export const NWS_USER_AGENT = "RainfallTracker/1.0 (rainfall-tracker@example.com)";

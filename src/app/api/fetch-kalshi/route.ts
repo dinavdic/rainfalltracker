@@ -67,6 +67,13 @@ function parseVolume(fp: string | undefined | null): number {
 let lastKalshiRequest = 0;
 const KALSHI_MIN_DELAY_MS = 250; // 250ms between requests to stay under rate limits
 
+// Orderbook cache (in-memory, 60s TTL per ticker)
+const orderbookCache = new Map<
+  string,
+  { yesBid: number | null; yesAsk: number | null; ts: number }
+>();
+const ORDERBOOK_CACHE_TTL_MS = 60 * 1000;
+
 /**
  * Fetch from Kalshi API with rate limiting and error handling.
  */
@@ -105,6 +112,63 @@ async function kalshiFetch(
     );
     return null;
   }
+}
+
+/**
+ * Fetch live top-of-book bid/ask from the orderbook endpoint for a ticker.
+ *
+ * The orderbook response has:
+ *   { orderbook: { yes: [[cents, qty], ...], no: [[cents, qty], ...] } }
+ *
+ * - yesBid = highest price in the `yes` array (best bid to buy yes)
+ * - yesAsk = 100 - highest price in the `no` array (cheapest way to buy yes)
+ *
+ * Returns cached result if within 60s TTL.
+ */
+async function fetchOrderbook(
+  ticker: string,
+  log: string[],
+  debugFirst: boolean = false,
+): Promise<{ yesBid: number | null; yesAsk: number | null }> {
+  const cached = orderbookCache.get(ticker);
+  if (cached && Date.now() - cached.ts < ORDERBOOK_CACHE_TTL_MS) {
+    return { yesBid: cached.yesBid, yesAsk: cached.yesAsk };
+  }
+
+  const data = (await kalshiFetch(
+    `/markets/${ticker}/orderbook`,
+    log,
+  )) as { orderbook?: { yes?: number[][]; no?: number[][] } } | null;
+
+  if (!data?.orderbook) {
+    return { yesBid: null, yesAsk: null };
+  }
+
+  if (debugFirst) {
+    log.push(
+      `[kalshi] Orderbook debug (${ticker}): raw=${JSON.stringify(data.orderbook)}`
+    );
+  }
+
+  const yesSide = data.orderbook.yes || [];
+  const noSide = data.orderbook.no || [];
+
+  // Best yes bid = highest price on yes side
+  let yesBid: number | null = null;
+  if (yesSide.length > 0) {
+    yesBid = Math.max(...yesSide.map((entry) => entry[0]));
+  }
+
+  // Best yes ask = 100 - highest price on no side
+  let yesAsk: number | null = null;
+  if (noSide.length > 0) {
+    const bestNoBid = Math.max(...noSide.map((entry) => entry[0]));
+    yesAsk = 100 - bestNoBid;
+  }
+
+  const result = { yesBid, yesAsk };
+  orderbookCache.set(ticker, { ...result, ts: Date.now() });
+  return result;
 }
 
 /**
@@ -403,6 +467,55 @@ async function discoverAndFetchMarkets(
       }
     }
   }
+
+  // --- Orderbook refresh: replace stale summary prices with live top-of-book ---
+  log.push("[kalshi] === Orderbook refresh for live bid/ask ===");
+  let orderbookFetches = 0;
+  let orderbookSkips = 0;
+  let debuggedFirst = false;
+
+  for (const station of STATIONS) {
+    for (const [thresholdKey, price] of Object.entries(
+      result[station.code].thresholds
+    )) {
+      // Skip if the summary spread is already narrow (≤ 15c) — probably fresh
+      if (price.yesBid !== null && price.yesAsk !== null) {
+        const spread = price.yesAsk - price.yesBid;
+        if (spread > 0 && spread <= 15) {
+          orderbookSkips++;
+          continue;
+        }
+      }
+
+      // Fetch live orderbook
+      const isDebug = !debuggedFirst;
+      const ob = await fetchOrderbook(price.ticker, log, isDebug);
+      if (isDebug) debuggedFirst = true;
+      orderbookFetches++;
+
+      if (ob.yesBid !== null || ob.yesAsk !== null) {
+        const oldBid = price.yesBid;
+        const oldAsk = price.yesAsk;
+
+        if (ob.yesBid !== null) price.yesBid = ob.yesBid;
+        if (ob.yesAsk !== null) price.yesAsk = ob.yesAsk;
+        price.isStale = price.yesBid === null || price.yesAsk === null;
+
+        log.push(
+          `[kalshi] OB ${station.code} >${thresholdKey}": ` +
+            `bid ${oldBid}c->${price.yesBid}c  ask ${oldAsk}c->${price.yesAsk}c`
+        );
+      } else {
+        log.push(
+          `[kalshi] OB ${station.code} >${thresholdKey}": empty orderbook`
+        );
+      }
+    }
+  }
+
+  log.push(
+    `[kalshi] Orderbook: ${orderbookFetches} fetched, ${orderbookSkips} skipped (spread ≤15c)`
+  );
 
   // --- Summary ---
   let totalMapped = 0;

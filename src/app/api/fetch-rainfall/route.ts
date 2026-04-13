@@ -288,21 +288,19 @@ async function fetchSingleModelEnsemble(
   const stationClimo = climoDaily?.[stationCode] ?? null;
   const hasSkill = skillCurves !== null && stationClimo !== null;
 
-  // For each member: aggregate hourly→daily, apply skill weighting, sum
-  const memberSums: number[] = [];
+  // --- Step 1: Compute raw daily totals (inches) for every member × day ---
+  // rawDaily[memberIdx][bucketIdx] = daily precip in inches (unweighted)
+  const rawDaily: number[][] = [];
 
   for (const key of memberKeys) {
     const memberData: (number | null)[] | undefined = hourly[key];
-
-    if (!memberData) {
-      memberSums.push(0);
-      continue;
-    }
-
-    let totalInches = 0;
+    const dailyValues: number[] = [];
 
     for (const bucket of dayBuckets) {
-      // Sum hourly mm for this day
+      if (!memberData) {
+        dailyValues.push(0);
+        continue;
+      }
       let dayMm = 0;
       for (const idx of bucket.indices) {
         const val = memberData[idx];
@@ -310,19 +308,88 @@ async function fetchSingleModelEnsemble(
           dayMm += val;
         }
       }
-      let dayInches = dayMm / 25.4;
+      dailyValues.push(dayMm / 25.4);
+    }
+    rawDaily.push(dailyValues);
+  }
 
-      // Apply skill weighting: blend forecast with climo
-      if (hasSkill) {
-        const w = getSkillWeight(skillCurves, stationCode, bucket.leadDay);
-        const climoMean = stationClimo[bucket.mmdd] ?? 0;
-        dayInches = w * dayInches + (1 - w) * climoMean;
+  // --- Step 2: Apply skill weighting that preserves ensemble spread ---
+  // For each forecast day, compute ensemble mean across all members,
+  // then blend the mean toward climo while preserving each member's
+  // FULL deviation from the ensemble mean (deviation-preserving blend):
+  //   blended_center(d) = w(d)*ensemble_mean(d) + (1-w(d))*climo(d)
+  //   blended(d) = blended_center(d) + (member_forecast(d) - ensemble_mean(d))
+  // This shifts the level toward climatology at low skill while keeping
+  // the original inter-member spread intact. Scaling deviation by w
+  // would compress spread by factor w, creating artificial certainty.
+  const memberSums: number[] = [];
+  const numMembers = memberKeys.length;
+
+  if (hasSkill && numMembers > 0) {
+    // Compute ensemble mean per day
+    const ensembleMeanPerDay: number[] = dayBuckets.map((_, bi) => {
+      let sum = 0;
+      for (let mi = 0; mi < numMembers; mi++) {
+        sum += rawDaily[mi][bi];
       }
+      return sum / numMembers;
+    });
 
-      totalInches += dayInches;
+    const isDEN = stationCode === "DEN";
+    if (isDEN) {
+      console.log(`[skill-debug] DEN: ${dayBuckets.length} forecast days, ${numMembers} members`);
     }
 
-    memberSums.push(Math.round(totalInches * 100) / 100);
+    // Compute blended center per day (same for all members)
+    const blendedCenter: number[] = dayBuckets.map((bucket, bi) => {
+      const w = getSkillWeight(skillCurves, stationCode, bucket.leadDay);
+      const climoMean = stationClimo[bucket.mmdd] ?? 0;
+      const center = w * ensembleMeanPerDay[bi] + (1 - w) * climoMean;
+
+      if (isDEN) {
+        console.log(
+          `[skill-debug] DEN day ${bucket.leadDay} (${bucket.mmdd}): ` +
+          `w=${w.toFixed(3)} ensMean=${ensembleMeanPerDay[bi].toFixed(4)}" ` +
+          `climo=${climoMean.toFixed(4)}" center=${center.toFixed(4)}"`
+        );
+      }
+      return center;
+    });
+
+    // For each member, compute blended sum preserving deviation
+    for (let mi = 0; mi < numMembers; mi++) {
+      let total = 0;
+      for (let bi = 0; bi < dayBuckets.length; bi++) {
+        const w = getSkillWeight(skillCurves, stationCode, dayBuckets[bi].leadDay);
+        const deviation = rawDaily[mi][bi] - ensembleMeanPerDay[bi];
+        // Shift center toward climo but preserve full member deviation
+        // (multiplying deviation by w would compress spread by factor w)
+        const blended = Math.max(0, blendedCenter[bi] + deviation);
+        total += blended;
+      }
+      memberSums.push(Math.round(total * 100) / 100);
+    }
+
+    if (isDEN) {
+      const sorted = [...memberSums].sort((a, b) => a - b);
+      const sum = sorted.reduce((a, b) => a + b, 0);
+      const mean = sum / sorted.length;
+      const p25 = sorted[Math.floor(sorted.length * 0.25)];
+      const p75 = sorted[Math.floor(sorted.length * 0.75)];
+      console.log(
+        `[skill-debug] DEN weighted sums: min=${sorted[0]} p25=${p25} ` +
+        `mean=${mean.toFixed(2)} p75=${p75} max=${sorted[sorted.length - 1]}`
+      );
+      console.log(
+        `[skill-debug] DEN full sorted: [${sorted.join(", ")}]`
+      );
+    }
+  } else {
+    // No skill weighting — just sum raw daily values
+    for (let mi = 0; mi < numMembers; mi++) {
+      const total = rawDaily[mi].reduce((a, b) => a + b, 0);
+      memberSums.push(Math.round(total * 100) / 100);
+    }
   }
 
   return { memberSums, forecastDays };

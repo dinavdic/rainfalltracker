@@ -7,8 +7,12 @@ import {
   EnsembleData,
   EnsembleStats,
   ModelBreakdown,
+  SkillCurvesData,
+  HistoricalData,
 } from "@/lib/types";
 import { saveRainfallData, loadRainfallData, isCacheFresh } from "@/lib/data-store";
+import { promises as fs } from "fs";
+import path from "path";
 
 export const dynamic = "force-dynamic";
 
@@ -20,6 +24,74 @@ const OPEN_METEO_ENSEMBLE_BASE =
 
 // In-memory cache of resolved grid coordinates
 const resolvedGridCache: Record<string, NWSGridInfo> = {};
+
+// --- Skill curves & climatological daily means (loaded once, cached) ---
+
+let cachedSkillCurves: SkillCurvesData | null = null;
+// climoDailyMean[stationCode]["MM-DD"] = mean daily precip in inches
+let cachedClimoDailyMean: Record<string, Record<string, number>> | null = null;
+
+async function loadSkillCurves(): Promise<SkillCurvesData | null> {
+  if (cachedSkillCurves) return cachedSkillCurves;
+  try {
+    const filePath = path.join(process.cwd(), "public", "data", "skill-curves.json");
+    const raw = await fs.readFile(filePath, "utf-8");
+    cachedSkillCurves = JSON.parse(raw) as SkillCurvesData;
+    return cachedSkillCurves;
+  } catch {
+    console.warn("[skill] Could not load skill-curves.json, skipping skill weighting");
+    return null;
+  }
+}
+
+async function loadClimoDailyMean(): Promise<Record<string, Record<string, number>> | null> {
+  if (cachedClimoDailyMean) return cachedClimoDailyMean;
+  try {
+    const filePath = path.join(process.cwd(), "public", "data", "historical-distributions.json");
+    const raw = await fs.readFile(filePath, "utf-8");
+    const hist = JSON.parse(raw) as HistoricalData;
+
+    const result: Record<string, Record<string, number>> = {};
+    for (const [code, sdata] of Object.entries(hist.stations)) {
+      const daily: Record<string, number> = {};
+      for (const [monthStr, mdata] of Object.entries(sdata.months)) {
+        const month = parseInt(monthStr, 10);
+        const dim = mdata.days_in_month;
+        for (let d = 1; d <= dim; d++) {
+          const prevMean = mdata.days[String(d - 1)]?.mean ?? 0;
+          const currMean = mdata.days[String(d)]?.mean ?? 0;
+          const singleDay = Math.max(0, prevMean - currMean);
+          const mmdd = `${String(month).padStart(2, "0")}-${String(d).padStart(2, "0")}`;
+          daily[mmdd] = Math.round(singleDay * 10000) / 10000;
+        }
+      }
+      result[code] = daily;
+    }
+    cachedClimoDailyMean = result;
+    return result;
+  } catch {
+    console.warn("[skill] Could not load historical-distributions.json for climo means");
+    return null;
+  }
+}
+
+/**
+ * Get the skill weight for a given lead day (1-indexed, 1..16).
+ * Uses the accumulated_skill fitted curve since we care about
+ * cumulative precipitation accuracy.
+ */
+function getSkillWeight(
+  skillCurves: SkillCurvesData | null,
+  stationCode: string,
+  leadDay: number
+): number {
+  if (!skillCurves) return 1; // no weighting if unavailable
+  const station = skillCurves[stationCode];
+  if (!station) return 1;
+  const fitted = station.accumulated_skill.fitted;
+  const idx = Math.min(Math.max(leadDay - 1, 0), fitted.length - 1);
+  return fitted[idx];
+}
 
 interface IEMResult {
   valid: string;
@@ -127,7 +199,9 @@ async function fetchSingleModelEnsemble(
   lat: number,
   lon: number,
   stationCode: string,
-  model: string
+  model: string,
+  skillCurves: SkillCurvesData | null,
+  climoDaily: Record<string, Record<string, number>> | null
 ): Promise<{ memberSums: number[]; forecastDays: number }> {
   const url =
     `${OPEN_METEO_ENSEMBLE_BASE}?latitude=${lat}&longitude=${lon}` +
@@ -163,7 +237,6 @@ async function fetchSingleModelEnsemble(
     });
 
   if (memberKeys.length === 0) {
-    // Log all hourly keys for debugging
     const sampleKeys = allKeys.slice(0, 20).join(", ");
     throw new Error(
       `Open-Meteo ${model} for ${stationCode}: no precipitation_member* keys found. ` +
@@ -180,31 +253,42 @@ async function fetchSingleModelEnsemble(
   const now = new Date();
   const currentYear = now.getFullYear();
   const currentMonth = now.getMonth(); // 0-indexed
-  // End of current month (start of next month)
   const monthEnd = new Date(currentYear, currentMonth + 1, 1);
 
-  // Find which time indices fall within the remainder of the current month
-  const validIndices: number[] = [];
+  // Group valid hour indices by calendar date (YYYY-MM-DD) for per-day aggregation
+  // Track lead day (1-indexed from today) for each calendar date
+  const dayBuckets: { dateStr: string; mmdd: string; leadDay: number; indices: number[] }[] = [];
+  const seenDates = new Map<string, number>(); // dateStr -> index into dayBuckets
   let lastValidDate: Date | null = null;
 
   for (let i = 0; i < times.length; i++) {
     const t = new Date(times[i]);
     if (t >= now && t < monthEnd) {
-      validIndices.push(i);
+      const dateStr = times[i].substring(0, 10);
       if (!lastValidDate || t > lastValidDate) {
         lastValidDate = t;
       }
+      if (!seenDates.has(dateStr)) {
+        // Lead day: how many days ahead of today (1 = today/tomorrow)
+        const dayDiff = Math.floor((t.getTime() - now.getTime()) / (24 * 60 * 60 * 1000)) + 1;
+        const mmdd = `${dateStr.substring(5, 7)}-${dateStr.substring(8, 10)}`;
+        seenDates.set(dateStr, dayBuckets.length);
+        dayBuckets.push({ dateStr, mmdd, leadDay: Math.max(1, dayDiff), indices: [] });
+      }
+      dayBuckets[seenDates.get(dateStr)!].indices.push(i);
     }
   }
 
-  // Compute how many forecast days are covered within the month
   const forecastDays = lastValidDate
     ? Math.ceil(
         (lastValidDate.getTime() - now.getTime()) / (24 * 60 * 60 * 1000)
       )
     : 0;
 
-  // Sum precipitation for each detected ensemble member across valid hours
+  const stationClimo = climoDaily?.[stationCode] ?? null;
+  const hasSkill = skillCurves !== null && stationClimo !== null;
+
+  // For each member: aggregate hourly→daily, apply skill weighting, sum
   const memberSums: number[] = [];
 
   for (const key of memberKeys) {
@@ -215,16 +299,30 @@ async function fetchSingleModelEnsemble(
       continue;
     }
 
-    let sumMm = 0;
-    for (const idx of validIndices) {
-      const val = memberData[idx];
-      if (val !== null && val !== undefined && val > 0) {
-        sumMm += val;
+    let totalInches = 0;
+
+    for (const bucket of dayBuckets) {
+      // Sum hourly mm for this day
+      let dayMm = 0;
+      for (const idx of bucket.indices) {
+        const val = memberData[idx];
+        if (val !== null && val !== undefined && val > 0) {
+          dayMm += val;
+        }
       }
+      let dayInches = dayMm / 25.4;
+
+      // Apply skill weighting: blend forecast with climo
+      if (hasSkill) {
+        const w = getSkillWeight(skillCurves, stationCode, bucket.leadDay);
+        const climoMean = stationClimo[bucket.mmdd] ?? 0;
+        dayInches = w * dayInches + (1 - w) * climoMean;
+      }
+
+      totalInches += dayInches;
     }
 
-    // Convert mm to inches
-    memberSums.push(Math.round((sumMm / 25.4) * 100) / 100);
+    memberSums.push(Math.round(totalInches * 100) / 100);
   }
 
   return { memberSums, forecastDays };
@@ -239,9 +337,15 @@ async function fetchCombinedEnsemble(
   lon: number,
   stationCode: string
 ): Promise<EnsembleData> {
+  // Load skill curves and climo daily means (cached after first call)
+  const [skillCurves, climoDaily] = await Promise.all([
+    loadSkillCurves(),
+    loadClimoDailyMean(),
+  ]);
+
   // Fetch GEFS first (rate-limited — caller handles the first delay)
   const gefsResult = await fetchSingleModelEnsemble(
-    lat, lon, stationCode, "gfs_seamless"
+    lat, lon, stationCode, "gfs_seamless", skillCurves, climoDaily
   );
 
   // Rate limit before ECMWF request
@@ -258,7 +362,7 @@ async function fetchCombinedEnsemble(
   let ecmwfResult: { memberSums: number[]; forecastDays: number } | null = null;
   try {
     ecmwfResult = await fetchSingleModelEnsemble(
-      lat, lon, stationCode, "ecmwf_ifs025"
+      lat, lon, stationCode, "ecmwf_ifs025", skillCurves, climoDaily
     );
     console.log(`[ensemble] ${stationCode}: ECMWF OK (${ecmwfResult.memberSums.length} members)`);
   } catch (e) {

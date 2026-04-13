@@ -221,8 +221,9 @@ export default function Dashboard() {
             ({ENSO_LABEL[CURRENT_ENSO_PHASE]} years only, falling back to
             all years when subset too small).
             Ensemble = average P(exceed) across GEFS+ECMWF members with
-            ENSO-conditioned climatology tail. Market = Kalshi mid-price.
-            Edge = Ensemble &minus; Market.
+            ENSO-conditioned climatology tail. Ensemble forecasts weighted
+            by lead-time skill (verified against 2 years of observations).
+            Market = Kalshi mid-price. Edge = Ensemble &minus; Market.
           </p>
         </footer>
       </div>

@@ -41,12 +41,15 @@ function ProbabilityBadge({ value }: { value: number }) {
   );
 }
 
-function EdgeBadge({ edge }: { edge: number }) {
+function formatEdge(edge: number): string {
   const sign = edge >= 0 ? "+" : "";
-  const label =
-    Math.abs(edge) < 10
-      ? `${sign}${edge.toFixed(1)}`
-      : `${sign}${Math.round(edge)}`;
+  return Math.abs(edge) < 10
+    ? `${sign}${edge.toFixed(1)}`
+    : `${sign}${Math.round(edge)}`;
+}
+
+function EdgeBadge({ edge }: { edge: number }) {
+  const label = formatEdge(edge);
   const colorClasses =
     edge >= 0
       ? "text-green-700 bg-green-50"
@@ -209,6 +212,21 @@ export default function StationCard({
                 ? t.ensembleProbability * 100 - marketProb * 100
                 : null;
 
+            // Model range info
+            const hasModelRange = t.gefsProb !== null && t.ecmwfProb !== null;
+            const loProb = hasModelRange ? Math.min(t.gefsProb!, t.ecmwfProb!) : 0;
+            const hiProb = hasModelRange ? Math.max(t.gefsProb!, t.ecmwfProb!) : 0;
+            const spread = hasModelRange ? (hiProb - loProb) * 100 : 0;
+            const showRange = hasModelRange && spread > 5;
+
+            // Edge range info
+            const worstEdge = showRange && marketProb !== null
+              ? loProb * 100 - marketProb * 100 : null;
+            const bestEdge = showRange && marketProb !== null
+              ? hiProb * 100 - marketProb * 100 : null;
+            const signsAgree = worstEdge !== null && bestEdge !== null
+              && ((worstEdge >= 0 && bestEdge >= 0) || (worstEdge < 0 && bestEdge < 0));
+
             return (
               <tr key={t.threshold} className="border-t border-gray-50">
                 <td className="py-1.5 text-gray-700 font-medium">
@@ -239,13 +257,16 @@ export default function StationCard({
                 {hasForecast && (
                   <td className="py-1.5 text-right">
                     <ProbabilityBadge value={t.ensembleProbability} />
-                    {t.gefsProb !== null &&
-                      t.ecmwfProb !== null &&
-                      Math.abs(t.gefsProb - t.ecmwfProb) * 100 > 15 && (
-                        <div className="text-[10px] text-gray-400 tabular-nums mt-0.5">
-                          G:{Math.round(t.gefsProb * 100)}/E:{Math.round(t.ecmwfProb * 100)}
-                        </div>
-                      )}
+                    {showRange && (
+                      <div className="text-[10px] text-gray-400 tabular-nums mt-0.5">
+                        ({Math.round(loProb * 100)}&ndash;{Math.round(hiProb * 100)}%)
+                      </div>
+                    )}
+                    {hasModelRange && spread > 15 && (
+                      <div className="text-[10px] text-gray-400 tabular-nums mt-0.5">
+                        G:{Math.round(t.gefsProb! * 100)}/E:{Math.round(t.ecmwfProb! * 100)}
+                      </div>
+                    )}
                   </td>
                 )}
                 {hasKalshi && (
@@ -267,7 +288,16 @@ export default function StationCard({
                     {hasForecast && (
                       <td className="py-1.5 text-right">
                         {edge !== null ? (
-                          <EdgeBadge edge={edge} />
+                          <>
+                            <EdgeBadge edge={edge} />
+                            {worstEdge !== null && bestEdge !== null && (
+                              <div className={`text-[10px] tabular-nums mt-0.5 ${
+                                signsAgree ? "text-green-600" : "text-red-500"
+                              }`}>
+                                ({formatEdge(worstEdge)} to {formatEdge(bestEdge)})
+                              </div>
+                            )}
+                          </>
                         ) : (
                           <span className="text-gray-300">&mdash;</span>
                         )}

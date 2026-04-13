@@ -202,7 +202,7 @@ async function fetchSingleModelEnsemble(
   model: string,
   skillCurves: SkillCurvesData | null,
   climoDaily: Record<string, Record<string, number>> | null
-): Promise<{ memberSums: number[]; forecastDays: number }> {
+): Promise<{ memberSums: number[]; forecastDays: number; modelRunLabel: string | null }> {
   const url =
     `${OPEN_METEO_ENSEMBLE_BASE}?latitude=${lat}&longitude=${lon}` +
     `&models=${model}&hourly=precipitation&forecast_days=16`;
@@ -223,6 +223,24 @@ async function fetchSingleModelEnsemble(
   if (!hourly || !hourly.time) {
     throw new Error(
       `Open-Meteo ${model} response missing hourly data for ${stationCode}`
+    );
+  }
+
+  // Detect model run from first forecast timestamp
+  let modelRunLabel: string | null = null;
+  const firstTime = hourly.time[0] as string | undefined;
+  if (firstTime) {
+    const fetchedAt = new Date().toISOString().substring(0, 16);
+    const firstHour = parseInt(firstTime.substring(11, 13), 10);
+    // Round to nearest standard model run cycle (00z, 06z, 12z, 18z)
+    const cycles = [0, 6, 12, 18];
+    const nearest = cycles.reduce((best, c) =>
+      Math.abs(c - firstHour) < Math.abs(best - firstHour) ? c : best
+    );
+    modelRunLabel = `${String(nearest).padStart(2, "0")}z`;
+    console.log(
+      `[ensemble] ${stationCode} ${model}: first forecast hour = ${firstTime}, ` +
+      `fetched at ${fetchedAt} (likely ${modelRunLabel} run)`
     );
   }
 
@@ -391,7 +409,7 @@ async function fetchSingleModelEnsemble(
     }
   }
 
-  return { memberSums, forecastDays };
+  return { memberSums, forecastDays, modelRunLabel };
 }
 
 /**
@@ -425,7 +443,7 @@ async function fetchCombinedEnsemble(
   // Fetch ECMWF (non-fatal if it fails)
   // Model name is ecmwf_ifs025 — the 0.25° ensemble model.
   // "ecmwf_ifs" is the deterministic/HRES model with no per-member fields.
-  let ecmwfResult: { memberSums: number[]; forecastDays: number } | null = null;
+  let ecmwfResult: { memberSums: number[]; forecastDays: number; modelRunLabel: string | null } | null = null;
   try {
     ecmwfResult = await fetchSingleModelEnsemble(
       lat, lon, stationCode, "ecmwf_ifs025", skillCurves, climoDaily
@@ -473,6 +491,10 @@ async function fetchCombinedEnsemble(
     modelBreakdown,
     forecastDays,
     stats: combinedStats,
+    modelRuns: {
+      gefs: gefsResult.modelRunLabel,
+      ecmwf: ecmwfResult?.modelRunLabel ?? null,
+    },
   };
 }
 

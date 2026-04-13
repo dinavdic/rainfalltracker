@@ -84,6 +84,7 @@ export interface EnsembleData {
   modelBreakdown: ModelBreakdown | null; // null if only one model available
   forecastDays: number; // how many days of the month the forecast covers
   stats: EnsembleStats; // combined stats (backward compat)
+  modelRuns?: { gefs: string | null; ecmwf: string | null }; // e.g. "12z"
 }
 
 export interface StationRainfallData {

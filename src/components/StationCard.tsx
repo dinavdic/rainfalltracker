@@ -611,6 +611,14 @@ export default function StationCard({
                 {" "}/ ECMWF: {ensemble.modelBreakdown.ecmwf.median.toFixed(2)}&quot;
               </span>
             )}
+            {ensemble.modelRuns && (ensemble.modelRuns.gefs || ensemble.modelRuns.ecmwf) && (
+              <span className="text-gray-300">
+                {" "}&middot; Runs:{" "}
+                {ensemble.modelRuns.gefs && <>GEFS {ensemble.modelRuns.gefs}</>}
+                {ensemble.modelRuns.gefs && ensemble.modelRuns.ecmwf && " / "}
+                {ensemble.modelRuns.ecmwf && <>ECMWF {ensemble.modelRuns.ecmwf}</>}
+              </span>
+            )}
           </>
         ) : qpfSum !== null ? (
           <>NWS QPF (fallback): {qpfSum.toFixed(2)}&quot;</>

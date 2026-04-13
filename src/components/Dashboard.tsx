@@ -134,15 +134,26 @@ export default function Dashboard() {
   // Compute convergence metrics from snapshot history
   const { convergenceMap, divergenceHistories } = useMemo(() => {
     const snapshots = loadSnapshots();
-    const cMap = computeAllConvergence(snapshots);
+
+    // Build Kalshi threshold keys per station for convergence filtering
+    const kalshiKeysPerStation: Record<string, string[]> = {};
+    if (kalshi) {
+      for (const [code, data] of Object.entries(kalshi.stations)) {
+        kalshiKeysPerStation[code] = Object.keys(data.thresholds);
+      }
+    }
+
+    const cMap = computeAllConvergence(snapshots, kalshiKeysPerStation);
     const dHist: Record<string, { t: string; div: number }[]> = {};
     for (const station of STATIONS) {
-      dHist[station.code] = getDivergenceHistory(station.code, snapshots);
+      const keys = kalshiKeysPerStation[station.code];
+      const keySet = keys && keys.length > 0 ? new Set(keys) : null;
+      dHist[station.code] = getDivergenceHistory(station.code, snapshots, keySet);
     }
     return { convergenceMap: cMap, divergenceHistories: dHist };
     // Re-compute after snapshot is saved (rainfall change triggers save)
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [rainfall]);
+  }, [rainfall, kalshi]);
 
   if (loading) {
     return (

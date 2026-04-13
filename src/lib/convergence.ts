@@ -27,8 +27,9 @@ export type ConvergenceSignal = "converging" | "diverging" | "stable";
 export type ConfidenceLevel = "high" | "medium" | "low";
 
 export interface StationConvergence {
-  qpfDivergence: number; // |GEFS_median - ECMWF_median| in inches
-  emaTrend: number | null; // 24h EMA of divergence; null if < 2 snapshots
+  qpfDivergence: number; // |GEFS_median - ECMWF_median| in inches (for display)
+  maxThresholdDivergence: number; // max |gefsProb - ecmwfProb| across Kalshi thresholds (0-1)
+  emaTrend: number | null; // 24h EMA of maxThresholdDivergence; null if < 2 snapshots
   convergenceSignal: ConvergenceSignal;
   confidenceLevel: ConfidenceLevel;
 }
@@ -128,12 +129,40 @@ export function saveSnapshot(
 // --- Convergence computation ---
 
 /**
+ * Compute max |gefsProb - ecmwfProb| across thresholds for a station snapshot.
+ * When kalshiKeys is provided, only considers those thresholds (where markets exist).
+ * When null, considers all thresholds that have both model probabilities.
+ */
+function getMaxThresholdDiv(
+  station: StationSnapshot,
+  kalshiKeys: Set<string> | null,
+): number {
+  let maxDiv = 0;
+  for (const [key, t] of Object.entries(station.thresholds)) {
+    if (kalshiKeys !== null && !kalshiKeys.has(key)) continue;
+    if (t.gefsProb !== null && t.ecmwfProb !== null) {
+      maxDiv = Math.max(maxDiv, Math.abs(t.gefsProb - t.ecmwfProb));
+    }
+  }
+  return maxDiv;
+}
+
+/**
  * Compute convergence metrics for a station from snapshot history.
+ *
+ * Confidence and convergence signal are driven by per-threshold probability
+ * divergence (not QPF inches), because a 1" model disagreement above all
+ * thresholds has zero probability impact, while a 0.2" disagreement at a
+ * critical threshold can swing probabilities dramatically.
+ *
+ * @param kalshiKeys - threshold keys with Kalshi markets (e.g. {"1.0","2.0"}).
+ *   When null, uses all thresholds with both model probs.
  * Returns null if the station has no model breakdown data in the latest snapshot.
  */
 export function computeConvergence(
   stationCode: string,
   snapshots: ForecastSnapshot[],
+  kalshiKeys: Set<string> | null = null,
 ): StationConvergence | null {
   if (snapshots.length === 0) return null;
 
@@ -143,25 +172,22 @@ export function computeConvergence(
   }
 
   const qpfDivergence = Math.abs(latest.gefsMedian - latest.ecmwfMedian);
+  const maxThresholdDivergence = getMaxThresholdDiv(latest, kalshiKeys);
 
-  // Build divergence time series from all snapshots that have both medians
+  // Build threshold-probability divergence time series from all snapshots
   const series: { t: number; div: number }[] = [];
   for (const snap of snapshots) {
     const st = snap.stations[stationCode];
-    if (st?.gefsMedian !== null && st?.ecmwfMedian !== null) {
-      series.push({
-        t: new Date(snap.timestamp).getTime(),
-        div: Math.abs(st.gefsMedian! - st.ecmwfMedian!),
-      });
-    }
+    if (!st || st.gefsMedian === null || st.ecmwfMedian === null) continue;
+    const div = getMaxThresholdDiv(st, kalshiKeys);
+    series.push({ t: new Date(snap.timestamp).getTime(), div });
   }
 
-  // Compute 24-hour EMA
+  // Compute 24-hour EMA of threshold divergence
   let emaTrend: number | null = null;
   let convergenceSignal: ConvergenceSignal = "stable";
 
   if (series.length >= 2) {
-    // Sort by time (should already be sorted, but be safe)
     series.sort((a, b) => a.t - b.t);
 
     let ema = series[0].div;
@@ -177,6 +203,7 @@ export function computeConvergence(
     emaTrend = ema;
 
     const emaDelta = ema - prevEma;
+    // 0.05 = 5 percentage points
     if (emaDelta < -0.05) {
       convergenceSignal = "converging";
     } else if (emaDelta > 0.05) {
@@ -184,18 +211,11 @@ export function computeConvergence(
     }
   }
 
-  // Confidence level based on normalized divergence
-  // Normalize by average of the two medians (min 0.01 to avoid division by zero)
-  const avgMedian = Math.max(
-    0.01,
-    (latest.gefsMedian + latest.ecmwfMedian) / 2,
-  );
-  const normalizedDiv = qpfDivergence / avgMedian;
-
+  // Confidence from max threshold probability divergence
   let confidenceLevel: ConfidenceLevel;
-  if (normalizedDiv < 0.15) {
+  if (maxThresholdDivergence < 0.15) {
     confidenceLevel = "high";
-  } else if (normalizedDiv > 0.4) {
+  } else if (maxThresholdDivergence > 0.35) {
     confidenceLevel = "low";
   } else {
     confidenceLevel = "medium";
@@ -203,38 +223,42 @@ export function computeConvergence(
 
   return {
     qpfDivergence: Math.round(qpfDivergence * 100) / 100,
-    emaTrend: emaTrend !== null ? Math.round(emaTrend * 1000) / 1000 : null,
+    maxThresholdDivergence: Math.round(maxThresholdDivergence * 10000) / 10000,
+    emaTrend: emaTrend !== null ? Math.round(emaTrend * 10000) / 10000 : null,
     convergenceSignal,
     confidenceLevel,
   };
 }
 
 /**
- * Extract the divergence time series for a station (for sparkline rendering).
- * Returns array of { t: ISO string, div: divergence in inches }.
+ * Extract the threshold probability divergence time series for a station
+ * (for sparkline rendering). Returns array of { t: ISO string, div: max
+ * |gefsProb - ecmwfProb| as 0-1 }.
  */
 export function getDivergenceHistory(
   stationCode: string,
   snapshots: ForecastSnapshot[],
+  kalshiKeys: Set<string> | null = null,
 ): { t: string; div: number }[] {
   const result: { t: string; div: number }[] = [];
   for (const snap of snapshots) {
     const st = snap.stations[stationCode];
-    if (st?.gefsMedian !== null && st?.ecmwfMedian !== null) {
-      result.push({
-        t: snap.timestamp,
-        div: Math.abs(st.gefsMedian! - st.ecmwfMedian!),
-      });
-    }
+    if (!st || st.gefsMedian === null || st.ecmwfMedian === null) continue;
+    result.push({
+      t: snap.timestamp,
+      div: getMaxThresholdDiv(st, kalshiKeys),
+    });
   }
   return result;
 }
 
 /**
  * Compute convergence metrics for all stations.
+ * @param kalshiKeysPerStation - map of station code → threshold keys with Kalshi markets
  */
 export function computeAllConvergence(
   snapshots: ForecastSnapshot[],
+  kalshiKeysPerStation: Record<string, string[]> = {},
 ): Record<string, StationConvergence> {
   if (snapshots.length === 0) return {};
 
@@ -242,7 +266,9 @@ export function computeAllConvergence(
   const result: Record<string, StationConvergence> = {};
 
   for (const code of Object.keys(latest.stations)) {
-    const metrics = computeConvergence(code, snapshots);
+    const keys = kalshiKeysPerStation[code];
+    const keySet = keys && keys.length > 0 ? new Set(keys) : null;
+    const metrics = computeConvergence(code, snapshots, keySet);
     if (metrics) {
       result[code] = metrics;
     }

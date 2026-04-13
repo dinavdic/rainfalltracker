@@ -117,11 +117,11 @@ async function kalshiFetch(
 /**
  * Fetch live top-of-book bid/ask from the orderbook endpoint for a ticker.
  *
- * The orderbook response has:
- *   { orderbook: { yes: [[cents, qty], ...], no: [[cents, qty], ...] } }
+ * Kalshi v2 API may return the orderbook in multiple formats:
+ *   - { orderbook: { yes: [[cents, qty], ...], no: [...] } }
+ *   - { orderbook_fp: { yes_dollars: [["0.40", "100"], ...], no_dollars: [...] } }
  *
- * - yesBid = highest price in the `yes` array (best bid to buy yes)
- * - yesAsk = 100 - highest price in the `no` array (cheapest way to buy yes)
+ * We try all known formats and extract top-of-book prices.
  *
  * Returns cached result if within 60s TTL.
  */
@@ -135,35 +135,73 @@ async function fetchOrderbook(
     return { yesBid: cached.yesBid, yesAsk: cached.yesAsk };
   }
 
+  // Use Record<string, unknown> so we can inspect all top-level keys
   const data = (await kalshiFetch(
     `/markets/${ticker}/orderbook`,
     log,
-  )) as { orderbook?: { yes?: number[][]; no?: number[][] } } | null;
+  )) as Record<string, unknown> | null;
 
-  if (!data?.orderbook) {
+  if (!data) {
     return { yesBid: null, yesAsk: null };
+  }
+
+  // Always log the full raw response structure for the first orderbook
+  if (debugFirst) {
+    log.push(
+      `[kalshi] Orderbook raw keys (${ticker}): ${JSON.stringify(Object.keys(data))}`
+    );
+    // Log up to 2000 chars of the full response
+    const fullJson = JSON.stringify(data);
+    log.push(
+      `[kalshi] Orderbook raw (${ticker}): ${fullJson.slice(0, 2000)}`
+    );
+  }
+
+  let yesBid: number | null = null;
+  let yesAsk: number | null = null;
+
+  // --- Format 1: orderbook.yes / orderbook.no (integer cents) ---
+  const ob = data.orderbook as
+    | { yes?: number[][]; no?: number[][] }
+    | undefined;
+  if (ob) {
+    const yesSide = ob.yes || [];
+    const noSide = ob.no || [];
+
+    if (yesSide.length > 0) {
+      yesBid = Math.max(...yesSide.map((e) => e[0]));
+    }
+    if (noSide.length > 0) {
+      yesAsk = 100 - Math.max(...noSide.map((e) => e[0]));
+    }
+  }
+
+  // --- Format 2: orderbook_fp with dollar strings ---
+  // e.g. { yes_dollars: [["0.40", "100"], ...], no_dollars: [["0.55", "80"], ...] }
+  const obFp = data.orderbook_fp as
+    | { yes_dollars?: string[][]; no_dollars?: string[][]; yes?: string[][]; no?: string[][] }
+    | undefined;
+  if (obFp && yesBid === null && yesAsk === null) {
+    const yesDollars = obFp.yes_dollars || obFp.yes || [];
+    const noDollars = obFp.no_dollars || obFp.no || [];
+
+    if (yesDollars.length > 0) {
+      const prices = yesDollars.map((e) => Math.round(parseFloat(e[0]) * 100));
+      yesBid = Math.max(...prices.filter((p) => !isNaN(p)));
+    }
+    if (noDollars.length > 0) {
+      const prices = noDollars.map((e) => Math.round(parseFloat(e[0]) * 100));
+      const bestNoBid = Math.max(...prices.filter((p) => !isNaN(p)));
+      if (!isNaN(bestNoBid)) {
+        yesAsk = 100 - bestNoBid;
+      }
+    }
   }
 
   if (debugFirst) {
     log.push(
-      `[kalshi] Orderbook debug (${ticker}): raw=${JSON.stringify(data.orderbook)}`
+      `[kalshi] Orderbook parsed (${ticker}): yesBid=${yesBid}c yesAsk=${yesAsk}c`
     );
-  }
-
-  const yesSide = data.orderbook.yes || [];
-  const noSide = data.orderbook.no || [];
-
-  // Best yes bid = highest price on yes side
-  let yesBid: number | null = null;
-  if (yesSide.length > 0) {
-    yesBid = Math.max(...yesSide.map((entry) => entry[0]));
-  }
-
-  // Best yes ask = 100 - highest price on no side
-  let yesAsk: number | null = null;
-  if (noSide.length > 0) {
-    const bestNoBid = Math.max(...noSide.map((entry) => entry[0]));
-    yesAsk = 100 - bestNoBid;
   }
 
   const result = { yesBid, yesAsk };

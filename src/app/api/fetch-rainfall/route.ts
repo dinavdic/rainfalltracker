@@ -360,7 +360,6 @@ async function fetchSingleModelEnsemble(
     for (let mi = 0; mi < numMembers; mi++) {
       let total = 0;
       for (let bi = 0; bi < dayBuckets.length; bi++) {
-        const w = getSkillWeight(skillCurves, stationCode, dayBuckets[bi].leadDay);
         const deviation = rawDaily[mi][bi] - ensembleMeanPerDay[bi];
         // Shift center toward climo but preserve full member deviation
         // (multiplying deviation by w would compress spread by factor w)

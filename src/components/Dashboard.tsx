@@ -1,6 +1,6 @@
 "use client";
 
-import { useState, useEffect, useCallback } from "react";
+import { useState, useEffect, useCallback, useRef, useMemo } from "react";
 import {
   HistoricalData,
   RainfallApiResponse,
@@ -10,6 +10,7 @@ import {
 } from "@/lib/types";
 import { computeProbabilities } from "@/lib/probability";
 import { STATIONS, THRESHOLDS } from "@/lib/stations";
+import { saveSnapshot } from "@/lib/convergence";
 import StationCard from "./StationCard";
 import CumulativeChart from "./CumulativeChart";
 
@@ -86,6 +87,45 @@ export default function Dashboard() {
     fetchData();
   }, [fetchData]);
 
+  // Compute probabilities for each station (memoized for stable reference)
+  const { stationProbs, mtdValues } = useMemo(() => {
+    const probs: Record<string, StationProbabilities> = {};
+    const mtds: Record<string, number | null> = {};
+
+    for (const station of STATIONS) {
+      const rainData = rainfall?.stations[station.code];
+      const mtd = rainData?.mtd ?? null;
+      const ensemble = rainData?.ensemble ?? null;
+      const qpfSum = rainData?.qpfSum ?? null;
+
+      mtds[station.code] = mtd;
+
+      if (historical) {
+        probs[station.code] = computeProbabilities(
+          station.code,
+          month,
+          dayOfMonth,
+          mtd ?? 0,
+          ensemble,
+          qpfSum,
+          historical,
+          CURRENT_ENSO_PHASE
+        );
+      }
+    }
+
+    return { stationProbs: probs, mtdValues: mtds };
+  }, [historical, rainfall, month, dayOfMonth]);
+
+  // Save forecast snapshot to localStorage on each successful fetch
+  const snapshotSaved = useRef(false);
+  useEffect(() => {
+    if (rainfall && Object.keys(stationProbs).length > 0 && !snapshotSaved.current) {
+      snapshotSaved.current = true;
+      saveSnapshot(rainfall, stationProbs);
+    }
+  }, [rainfall, stationProbs]);
+
   if (loading) {
     return (
       <div className="min-h-screen bg-gray-50 flex items-center justify-center">
@@ -100,32 +140,6 @@ export default function Dashboard() {
         <div className="text-red-500">{error}</div>
       </div>
     );
-  }
-
-  // Compute probabilities for each station
-  const stationProbs: Record<string, StationProbabilities> = {};
-  const mtdValues: Record<string, number | null> = {};
-
-  for (const station of STATIONS) {
-    const rainData = rainfall?.stations[station.code];
-    const mtd = rainData?.mtd ?? null;
-    const ensemble = rainData?.ensemble ?? null;
-    const qpfSum = rainData?.qpfSum ?? null;
-
-    mtdValues[station.code] = mtd;
-
-    if (historical) {
-      stationProbs[station.code] = computeProbabilities(
-        station.code,
-        month,
-        dayOfMonth,
-        mtd ?? 0,
-        ensemble,
-        qpfSum,
-        historical,
-        CURRENT_ENSO_PHASE
-      );
-    }
   }
 
   const hasLiveData = rainfall && Object.values(rainfall.stations).some((s) => s.mtd !== null);

@@ -23,7 +23,11 @@ const CURRENT_ENSO_PHASE: EnsoPhase = "neutral";
  * GET /api/cron/update
  *
  * Fetches fresh rainfall + Kalshi data, computes probabilities, builds a
- * ForecastSnapshot, and persists it to Vercel Blob storage.
+ * ForecastSnapshot, caches it in /tmp, and returns it in the response body.
+ *
+ * The snapshot is returned so that:
+ *   - The Dashboard can merge it into localStorage on next visit
+ *   - External monitoring can verify the cron is producing valid data
  *
  * Secured with a bearer token from CRON_SECRET env var.
  * Called by:
@@ -116,15 +120,14 @@ export async function GET(request: NextRequest) {
 
     log.push(`[cron] Probabilities computed for ${Object.keys(stationProbs).length} stations`);
 
-    // --- Build and save snapshot ---
+    // --- Build snapshot, cache to /tmp, return in response ---
     const snapshot = buildSnapshot(rainfall, stationProbs, kalshi);
 
     await saveServerSnapshot(snapshot);
 
     const elapsed = Date.now() - startMs;
-    log.push(`[cron] Snapshot saved to Blob storage (${elapsed}ms total)`);
+    log.push(`[cron] Snapshot built and cached (${elapsed}ms total)`);
 
-    // Log to Vercel for debugging
     for (const line of log) {
       console.log(line);
     }
@@ -135,6 +138,7 @@ export async function GET(request: NextRequest) {
       stations: Object.keys(snapshot.stations).length,
       hasKalshi: kalshi !== null,
       elapsedMs: elapsed,
+      snapshot,
       log,
     });
   } catch (e) {

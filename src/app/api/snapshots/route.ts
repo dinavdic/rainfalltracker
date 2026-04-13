@@ -6,12 +6,10 @@ export const dynamic = "force-dynamic";
 /**
  * GET /api/snapshots
  *
- * Returns all server-side forecast snapshots from Vercel Blob storage.
- * The Dashboard merges these with any localStorage snapshots to give
- * users full snapshot history even on first visit or new devices.
- *
- * No auth required — snapshot data is non-sensitive (aggregated
- * weather probabilities and public market prices).
+ * Returns server-side forecast snapshots cached in /tmp.
+ * On Vercel, /tmp is ephemeral (cleared on cold starts), so this is a
+ * best-effort supplement to the browser's localStorage. The Dashboard
+ * merges these with localStorage snapshots for a more complete history.
  */
 export async function GET() {
   try {
@@ -20,11 +18,7 @@ export async function GET() {
       snapshots,
       count: snapshots.length,
     });
-  } catch (e) {
-    const msg = e instanceof Error ? e.message : String(e);
-    // Return empty array rather than error — the dashboard should
-    // degrade gracefully to localStorage-only snapshots
-    console.error("[snapshots] Failed to load from Blob:", msg);
+  } catch {
     return NextResponse.json({ snapshots: [], count: 0 });
   }
 }

@@ -9,7 +9,6 @@
     "lint": "next lint"
   },
   "dependencies": {
-    "@vercel/blob": "^2.3.3",
     "chart.js": "^4.5.1",
     "jstat": "^1.9.6",
     "next": "14.2.35",

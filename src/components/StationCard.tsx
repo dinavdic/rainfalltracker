@@ -206,6 +206,13 @@ export default function StationCard({
                 {hasForecast && (
                   <td className="py-1.5 text-right">
                     <ProbabilityBadge value={t.ensembleProbability} />
+                    {t.gefsProb !== null &&
+                      t.ecmwfProb !== null &&
+                      Math.abs(t.gefsProb - t.ecmwfProb) * 100 > 15 && (
+                        <div className="text-[10px] text-gray-400 tabular-nums mt-0.5">
+                          G:{Math.round(t.gefsProb * 100)}/E:{Math.round(t.ecmwfProb * 100)}
+                        </div>
+                      )}
                   </td>
                 )}
                 {hasKalshi && (

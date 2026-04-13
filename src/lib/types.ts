@@ -107,6 +107,8 @@ export interface ThresholdProbability {
   baseRate: number;
   ensembleProbability: number;
   climatologyProbability: number;
+  gefsProb: number | null; // P(exceed) from GEFS members only; null if unavailable
+  ecmwfProb: number | null; // P(exceed) from ECMWF members only; null if unavailable
 }
 
 export interface StationProbabilities {

@@ -106,6 +106,55 @@ export function computeProbabilities(
   const dim = daysInMonth(month);
   const daysRemaining = dim - dayOfMonth;
 
+  // Pre-compute tail gamma once (shared across thresholds)
+  let tailGamma: GammaParams | null = null;
+  if (ensemble !== null) {
+    const uncoveredDays = daysRemaining - ensemble.forecastDays;
+    if (uncoveredDays > 0) {
+      const tailStartDay = dayOfMonth + ensemble.forecastDays;
+      for (let d = tailStartDay; d >= dayOfMonth + 1; d--) {
+        const dist = monthData?.days[String(d)];
+        const candidate = getEnsoGamma(dist, ensoPhase);
+        if (candidate) {
+          tailGamma = candidate;
+          break;
+        }
+      }
+    }
+  }
+
+  /**
+   * Compute P(exceed threshold) from a set of ensemble member sums.
+   * Returns null if memberSums is empty.
+   */
+  function ensembleExceedProb(
+    memberSums: number[],
+    remainingNeeded: number,
+    forecastDays: number,
+  ): number | null {
+    if (memberSums.length === 0) return null;
+    const uncoveredDays = daysRemaining - forecastDays;
+
+    if (uncoveredDays <= 0) {
+      let exceedCount = 0;
+      for (const s of memberSums) {
+        if (s >= remainingNeeded) exceedCount++;
+      }
+      return exceedCount / memberSums.length;
+    } else {
+      let totalProb = 0;
+      for (const s of memberSums) {
+        const gap = remainingNeeded - s;
+        if (gap <= 0) {
+          totalProb += 1.0;
+        } else if (tailGamma) {
+          totalProb += gammaSurvival(gap, tailGamma);
+        }
+      }
+      return totalProb / memberSums.length;
+    }
+  }
+
   const thresholds: ThresholdProbability[] = THRESHOLDS.map((threshold) => {
     const thresholdKey = threshold.toFixed(1);
     const baseRate = getEnsoBaseRate(monthData, thresholdKey, ensoPhase);
@@ -119,6 +168,8 @@ export function computeProbabilities(
         baseRate,
         ensembleProbability: 1.0,
         climatologyProbability: 1.0,
+        gefsProb: ensemble ? 1.0 : null,
+        ecmwfProb: ensemble && ensemble.ecmwfMemberSums.length > 0 ? 1.0 : null,
       };
     }
 
@@ -132,51 +183,18 @@ export function computeProbabilities(
       climatologyProbability = gammaSurvival(remainingNeeded, gamma);
     }
 
-    // --- Ensemble probability ---
+    // --- Ensemble probabilities (combined + per-model) ---
     let ensembleProbability = climatologyProbability; // fallback
+    let gefsProb: number | null = null;
+    let ecmwfProb: number | null = null;
 
     if (ensemble !== null) {
-      // How many days after the forecast ends until EOM?
-      const uncoveredDays = daysRemaining - ensemble.forecastDays;
+      const fd = ensemble.forecastDays;
+      const combined = ensembleExceedProb(ensemble.memberSums, remainingNeeded, fd);
+      if (combined !== null) ensembleProbability = combined;
 
-      if (uncoveredDays <= 0) {
-        // Forecast covers through EOM — just count exceeding members
-        let exceedCount = 0;
-        for (const memberSum of ensemble.memberSums) {
-          if (memberSum >= remainingNeeded) {
-            exceedCount++;
-          }
-        }
-        ensembleProbability = exceedCount / ensemble.memberSums.length;
-      } else {
-        // Forecast ends before EOM — blend each member with climatology tail
-        // Use ENSO-conditional gamma for the tail
-        const tailStartDay = dayOfMonth + ensemble.forecastDays;
-        let tailGamma: GammaParams | null = null;
-        for (let d = tailStartDay; d >= dayOfMonth + 1; d--) {
-          const dist = monthData?.days[String(d)];
-          const candidate = getEnsoGamma(dist, ensoPhase);
-          if (candidate) {
-            tailGamma = candidate;
-            break;
-          }
-        }
-
-        let totalProb = 0;
-        for (const memberSum of ensemble.memberSums) {
-          const remainingAfterMember = remainingNeeded - memberSum;
-
-          if (remainingAfterMember <= 0) {
-            // This member already exceeds the threshold
-            totalProb += 1.0;
-          } else if (tailGamma) {
-            // P(tail_rainfall > remaining_after_member)
-            totalProb += gammaSurvival(remainingAfterMember, tailGamma);
-          }
-          // else: no gamma fit at all — this member contributes 0
-        }
-        ensembleProbability = totalProb / ensemble.memberSums.length;
-      }
+      gefsProb = ensembleExceedProb(ensemble.gefsMemberSums, remainingNeeded, fd);
+      ecmwfProb = ensembleExceedProb(ensemble.ecmwfMemberSums, remainingNeeded, fd);
     } else if (qpfSum !== null) {
       // Fallback: deterministic NWS QPF blending (old behavior)
       const forecastDays = Math.min(7, daysRemaining);
@@ -191,21 +209,24 @@ export function computeProbabilities(
         const climatologyStartDay = dayOfMonth + forecastDays;
         const climatologyDayKey = String(climatologyStartDay);
         const climatologyDist = monthData?.days[climatologyDayKey];
-        const tailGamma = getEnsoGamma(climatologyDist, ensoPhase);
+        const qpfTailGamma = getEnsoGamma(climatologyDist, ensoPhase);
 
-        if (tailGamma) {
-          ensembleProbability = gammaSurvival(neededAfterQpf, tailGamma);
+        if (qpfTailGamma) {
+          ensembleProbability = gammaSurvival(neededAfterQpf, qpfTailGamma);
         }
       }
     }
+
+    const round4 = (v: number) => Math.round(v * 10000) / 10000;
 
     return {
       threshold,
       remainingNeeded: Math.round(remainingNeeded * 100) / 100,
       baseRate,
-      ensembleProbability: Math.round(ensembleProbability * 10000) / 10000,
-      climatologyProbability:
-        Math.round(climatologyProbability * 10000) / 10000,
+      ensembleProbability: round4(ensembleProbability),
+      climatologyProbability: round4(climatologyProbability),
+      gefsProb: gefsProb !== null ? round4(gefsProb) : null,
+      ecmwfProb: ecmwfProb !== null ? round4(ecmwfProb) : null,
     };
   });
 

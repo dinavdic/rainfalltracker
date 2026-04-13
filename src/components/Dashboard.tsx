@@ -187,6 +187,8 @@ export default function Dashboard() {
                     baseRate: 0,
                     ensembleProbability: 0,
                     climatologyProbability: 0,
+                    gefsProb: null,
+                    ecmwfProb: null,
                   }))
                 }
                 kalshi={kalshi?.stations[station.code] ?? null}

@@ -11,6 +11,7 @@ import {
 import { computeProbabilities } from "@/lib/probability";
 import { STATIONS, THRESHOLDS } from "@/lib/stations";
 import {
+  ForecastSnapshot,
   saveSnapshot,
   loadSnapshots,
   computeAllConvergence,
@@ -47,6 +48,7 @@ export default function Dashboard() {
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const [liveDataFailed, setLiveDataFailed] = useState(false);
+  const [serverSnapshots, setServerSnapshots] = useState<ForecastSnapshot[]>([]);
 
   const now = new Date();
   const month = now.getMonth() + 1;
@@ -83,6 +85,19 @@ export default function Dashboard() {
         setKalshi(await kalshiResult.value.json());
       }
       // Kalshi failure is non-fatal — we just don't show Market/Edge columns
+
+      // Fetch server-side snapshots from Blob storage (non-blocking)
+      try {
+        const snapResp = await fetch("/api/snapshots");
+        if (snapResp.ok) {
+          const snapData = await snapResp.json();
+          if (Array.isArray(snapData.snapshots)) {
+            setServerSnapshots(snapData.snapshots);
+          }
+        }
+      } catch {
+        // Non-fatal — fall back to localStorage-only snapshots
+      }
     } catch (e) {
       setError(`Error loading data: ${e instanceof Error ? e.message : String(e)}`);
     } finally {
@@ -135,7 +150,18 @@ export default function Dashboard() {
 
   // Compute convergence, momentum, and Kalshi delta metrics from snapshot history
   const { convergenceMap, divergenceHistories, momentumMap, kalshiDeltaMap } = useMemo(() => {
-    const snapshots = loadSnapshots();
+    // Merge server-side (Blob) and client-side (localStorage) snapshots,
+    // deduplicating by timestamp so we get a complete history
+    const localSnaps = loadSnapshots();
+    const seen = new Set(localSnaps.map((s) => s.timestamp));
+    const merged = [...localSnaps];
+    for (const s of serverSnapshots) {
+      if (!seen.has(s.timestamp)) {
+        merged.push(s);
+      }
+    }
+    merged.sort((a, b) => new Date(a.timestamp).getTime() - new Date(b.timestamp).getTime());
+    const snapshots = merged;
 
     // Build Kalshi threshold keys per station for convergence filtering
     const kalshiKeysPerStation: Record<string, string[]> = {};
@@ -157,7 +183,7 @@ export default function Dashboard() {
     return { convergenceMap: cMap, divergenceHistories: dHist, momentumMap: mMap, kalshiDeltaMap: kMap };
     // Re-compute after snapshot is saved (rainfall change triggers save)
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [rainfall, kalshi]);
+  }, [rainfall, kalshi, serverSnapshots]);
 
   if (loading) {
     return (

@@ -75,17 +75,16 @@ function persistSnapshots(snapshots: ForecastSnapshot[]): void {
 // --- Snapshot creation ---
 
 /**
- * Build and save a snapshot from the current fetch results.
- * Deduplicates within 4 hours and prunes entries older than 7 days.
+ * Build a ForecastSnapshot from fetch results (pure function, no side effects).
+ * Used by both the client-side saveSnapshot and the server-side cron route.
  */
-export function saveSnapshot(
+export function buildSnapshot(
   rainfall: RainfallApiResponse,
   stationProbs: Record<string, StationProbabilities>,
   kalshi?: KalshiApiResponse | null,
-): void {
-  const now = new Date();
+): ForecastSnapshot {
   const snapshot: ForecastSnapshot = {
-    timestamp: now.toISOString(),
+    timestamp: new Date().toISOString(),
     stations: {},
   };
 
@@ -141,16 +140,25 @@ export function saveSnapshot(
     snapshot.stations[code] = stationSnap;
   }
 
-  // Load existing, prune old, deduplicate, append
-  let snapshots = loadSnapshots();
+  return snapshot;
+}
 
-  const cutoff = now.getTime() - MAX_AGE_MS;
-  snapshots = snapshots.filter((s) => new Date(s.timestamp).getTime() > cutoff);
+/**
+ * Append a snapshot to an existing array, deduplicating within 4 hours
+ * and pruning entries older than 7 days. Returns the updated array.
+ */
+export function appendSnapshot(
+  existing: ForecastSnapshot[],
+  snapshot: ForecastSnapshot,
+): ForecastSnapshot[] {
+  const now = new Date(snapshot.timestamp).getTime();
+  const cutoff = now - MAX_AGE_MS;
 
-  // Deduplicate: if the most recent snapshot is within 4 hours, replace it
+  const snapshots = existing.filter((s) => new Date(s.timestamp).getTime() > cutoff);
+
   if (snapshots.length > 0) {
     const last = new Date(snapshots[snapshots.length - 1].timestamp).getTime();
-    if (now.getTime() - last < DEDUP_MS) {
+    if (now - last < DEDUP_MS) {
       snapshots[snapshots.length - 1] = snapshot;
     } else {
       snapshots.push(snapshot);
@@ -159,7 +167,22 @@ export function saveSnapshot(
     snapshots.push(snapshot);
   }
 
-  persistSnapshots(snapshots);
+  return snapshots;
+}
+
+/**
+ * Build and save a snapshot to browser localStorage.
+ * Deduplicates within 4 hours and prunes entries older than 7 days.
+ */
+export function saveSnapshot(
+  rainfall: RainfallApiResponse,
+  stationProbs: Record<string, StationProbabilities>,
+  kalshi?: KalshiApiResponse | null,
+): void {
+  const snapshot = buildSnapshot(rainfall, stationProbs, kalshi);
+  const existing = loadSnapshots();
+  const updated = appendSnapshot(existing, snapshot);
+  persistSnapshots(updated);
 }
 
 // --- Convergence computation ---

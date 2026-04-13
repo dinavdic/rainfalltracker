@@ -210,6 +210,27 @@ export function computeConvergence(
 }
 
 /**
+ * Extract the divergence time series for a station (for sparkline rendering).
+ * Returns array of { t: ISO string, div: divergence in inches }.
+ */
+export function getDivergenceHistory(
+  stationCode: string,
+  snapshots: ForecastSnapshot[],
+): { t: string; div: number }[] {
+  const result: { t: string; div: number }[] = [];
+  for (const snap of snapshots) {
+    const st = snap.stations[stationCode];
+    if (st?.gefsMedian !== null && st?.ecmwfMedian !== null) {
+      result.push({
+        t: snap.timestamp,
+        div: Math.abs(st.gefsMedian! - st.ecmwfMedian!),
+      });
+    }
+  }
+  return result;
+}
+
+/**
  * Compute convergence metrics for all stations.
  */
 export function computeAllConvergence(

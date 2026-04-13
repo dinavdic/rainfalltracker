@@ -10,7 +10,12 @@ import {
 } from "@/lib/types";
 import { computeProbabilities } from "@/lib/probability";
 import { STATIONS, THRESHOLDS } from "@/lib/stations";
-import { saveSnapshot } from "@/lib/convergence";
+import {
+  saveSnapshot,
+  loadSnapshots,
+  computeAllConvergence,
+  getDivergenceHistory,
+} from "@/lib/convergence";
 import StationCard from "./StationCard";
 import CumulativeChart from "./CumulativeChart";
 
@@ -126,6 +131,19 @@ export default function Dashboard() {
     }
   }, [rainfall, stationProbs]);
 
+  // Compute convergence metrics from snapshot history
+  const { convergenceMap, divergenceHistories } = useMemo(() => {
+    const snapshots = loadSnapshots();
+    const cMap = computeAllConvergence(snapshots);
+    const dHist: Record<string, { t: string; div: number }[]> = {};
+    for (const station of STATIONS) {
+      dHist[station.code] = getDivergenceHistory(station.code, snapshots);
+    }
+    return { convergenceMap: cMap, divergenceHistories: dHist };
+    // Re-compute after snapshot is saved (rainfall change triggers save)
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [rainfall]);
+
   if (loading) {
     return (
       <div className="min-h-screen bg-gray-50 flex items-center justify-center">
@@ -205,6 +223,8 @@ export default function Dashboard() {
                     ecmwfProb: null,
                   }))
                 }
+                convergence={convergenceMap[station.code] ?? null}
+                divergenceHistory={divergenceHistories[station.code] ?? []}
                 kalshi={kalshi?.stations[station.code] ?? null}
                 lastDate={rainData?.lastUpdated ?? null}
                 error={rainData?.error}

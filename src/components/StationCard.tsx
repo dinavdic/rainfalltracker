@@ -1,6 +1,7 @@
 "use client";
 
 import { ThresholdProbability, EnsembleData, KalshiStationData } from "@/lib/types";
+import { StationConvergence } from "@/lib/convergence";
 
 interface StationCardProps {
   code: string;
@@ -10,6 +11,8 @@ interface StationCardProps {
   ensemble: EnsembleData | null;
   qpfSum: number | null;
   thresholds: ThresholdProbability[];
+  convergence: StationConvergence | null;
+  divergenceHistory: { t: string; div: number }[];
   kalshi: KalshiStationData | null;
   lastDate: string | null;
   error?: string;
@@ -74,6 +77,34 @@ function kalshiMidProb(
   return null;
 }
 
+function DivergenceSparkline({ data }: { data: { t: string; div: number }[] }) {
+  const W = 50;
+  const H = 16;
+  const pad = 1;
+
+  if (data.length < 2) return null;
+
+  const maxDiv = Math.max(...data.map((d) => d.div), 0.01);
+  const points = data.map((d, i) => {
+    const x = pad + (i / (data.length - 1)) * (W - 2 * pad);
+    const y = H - pad - (d.div / maxDiv) * (H - 2 * pad);
+    return `${x.toFixed(1)},${y.toFixed(1)}`;
+  });
+
+  return (
+    <svg width={W} height={H} className="inline-block align-middle">
+      <polyline
+        points={points.join(" ")}
+        fill="none"
+        stroke="#9ca3af"
+        strokeWidth="1.5"
+        strokeLinecap="round"
+        strokeLinejoin="round"
+      />
+    </svg>
+  );
+}
+
 export default function StationCard({
   code,
   city,
@@ -82,6 +113,8 @@ export default function StationCard({
   ensemble,
   qpfSum,
   thresholds,
+  convergence,
+  divergenceHistory,
   kalshi,
   lastDate,
   error,
@@ -247,6 +280,64 @@ export default function StationCard({
           })}
         </tbody>
       </table>
+
+      {/* Model convergence row */}
+      {convergence && (
+        <div className="text-[11px] mb-2 flex items-center gap-1.5 flex-wrap">
+          <span className="text-gray-500">Models:</span>
+          {(() => {
+            const { qpfDivergence, convergenceSignal, confidenceLevel } = convergence;
+
+            // Alignment status
+            const isAligned = qpfDivergence <= 0.3;
+            const alignColor = isAligned
+              ? "text-green-600"
+              : qpfDivergence <= 0.8
+                ? "text-amber-600"
+                : "text-red-600";
+            const alignIcon = isAligned ? "\u2713" : "\u2717";
+            const alignLabel = isAligned ? "Aligned" : "Divergent";
+
+            // Signal arrow
+            const signalMap = {
+              converging: { arrow: "\u2198", color: "text-green-600" },
+              diverging: { arrow: "\u2197", color: "text-red-600" },
+              stable: { arrow: "\u2192", color: "text-gray-500" },
+            } as const;
+            const sig = signalMap[convergenceSignal];
+
+            // Confidence color
+            const confColor =
+              confidenceLevel === "high"
+                ? "text-green-600"
+                : confidenceLevel === "medium"
+                  ? "text-amber-600"
+                  : "text-red-600";
+            const confLabel =
+              confidenceLevel.charAt(0).toUpperCase() + confidenceLevel.slice(1);
+
+            return (
+              <>
+                <span className={`font-semibold ${alignColor}`}>
+                  {alignIcon} {alignLabel}
+                </span>
+                <span className="text-gray-400 tabular-nums">
+                  ({qpfDivergence.toFixed(2)}&quot; gap)
+                </span>
+                <span className={sig.color}>{sig.arrow} {convergenceSignal}</span>
+                <span className="text-gray-400">|</span>
+                <span className="text-gray-500">Confidence:</span>
+                <span className={`font-semibold ${confColor}`}>{confLabel}</span>
+                {divergenceHistory.length >= 4 ? (
+                  <DivergenceSparkline data={divergenceHistory} />
+                ) : (
+                  <span className="text-gray-400 italic">Collecting data...</span>
+                )}
+              </>
+            );
+          })()}
+        </div>
+      )}
 
       {/* Forecast summary line */}
       <div className="text-xs text-gray-400">

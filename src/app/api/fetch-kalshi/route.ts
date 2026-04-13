@@ -207,6 +207,9 @@ async function discoverAndFetchMarkets(
   // Track which tickers we've seen to avoid duplicates
   const seenTickers = new Set<string>();
 
+  // Track whether we've logged the SFO price debug line
+  let sfoLogged = false;
+
   /**
    * Process a set of markets: extract threshold, match station, store price.
    */
@@ -250,6 +253,26 @@ async function discoverAndFetchMarkets(
       const yesAsk = dollarsToCents(market.yes_ask_dollars);
       const lastPrice = dollarsToCents(market.last_price_dollars);
       const volume = parseVolume(market.volume_fp);
+      const isStale = yesBid === null || yesAsk === null;
+
+      // Diagnostic logging: dump all price-related fields for first SFO market
+      if (station === "SFO" && !sfoLogged) {
+        sfoLogged = true;
+        const priceFields: Record<string, unknown> = {};
+        for (const k of Object.keys(market)) {
+          if (
+            k.includes("price") || k.includes("bid") || k.includes("ask") ||
+            k.includes("dollar") || k.includes("volume") || k.includes("cost")
+          ) {
+            priceFields[k] = market[k];
+          }
+        }
+        log.push(
+          `[kalshi] SFO price debug (${market.ticker}): ` +
+            `raw=${JSON.stringify(priceFields)} ` +
+            `parsed: bid=${yesBid}c ask=${yesAsk}c last=${lastPrice}c isStale=${isStale}`
+        );
+      }
 
       const price: KalshiMarketPrice = {
         ticker: market.ticker,
@@ -257,6 +280,7 @@ async function discoverAndFetchMarkets(
         yesBid,
         yesAsk,
         volume,
+        isStale,
       };
 
       result[station].thresholds[thresholdKey] = price;

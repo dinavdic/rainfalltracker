@@ -70,15 +70,16 @@ function EdgeBadge({ edge }: { edge: number }) {
 /**
  * Compute the Kalshi mid-price as a probability (0-1).
  * Uses mid of bid/ask if available, otherwise last_price.
+ * Returns { prob, isStale } where isStale=true means we fell back to lastPrice.
  */
 function kalshiMidProb(
-  price: { yesBid: number | null; yesAsk: number | null; lastPrice: number | null }
-): number | null {
+  price: { yesBid: number | null; yesAsk: number | null; lastPrice: number | null; isStale: boolean }
+): { prob: number; isStale: boolean } | null {
   if (price.yesBid !== null && price.yesAsk !== null) {
-    return (price.yesBid + price.yesAsk) / 2 / 100;
+    return { prob: (price.yesBid + price.yesAsk) / 2 / 100, isStale: false };
   }
   if (price.lastPrice !== null) {
-    return price.lastPrice / 100;
+    return { prob: price.lastPrice / 100, isStale: true };
   }
   return null;
 }
@@ -252,9 +253,11 @@ export default function StationCard({
           {thresholds.map((t) => {
             const thresholdKey = t.threshold.toFixed(1);
             const kalshiPrice = kalshi?.thresholds[thresholdKey] ?? null;
-            const marketProb = kalshiPrice
+            const marketResult = kalshiPrice
               ? kalshiMidProb(kalshiPrice)
               : null;
+            const marketProb = marketResult?.prob ?? null;
+            const marketIsStale = marketResult?.isStale ?? false;
             const edge =
               hasForecast && marketProb !== null
                 ? t.ensembleProbability * 100 - marketProb * 100
@@ -346,8 +349,16 @@ export default function StationCard({
                       {marketProb !== null ? (
                         <>
                           <span
-                            className="inline-block px-2 py-0.5 rounded text-xs font-semibold bg-blue-50 text-blue-800 tabular-nums"
-                            title={change24h !== null ? `24h: ${change24h > 0 ? "+" : ""}${Math.round(change24h)}c` : undefined}
+                            className={`inline-block px-2 py-0.5 rounded text-xs font-semibold tabular-nums ${
+                              marketIsStale
+                                ? "bg-gray-50 text-gray-500 border border-dashed border-gray-300"
+                                : "bg-blue-50 text-blue-800"
+                            }`}
+                            title={
+                              marketIsStale
+                                ? `Last trade price (no active bid/ask)${change24h !== null ? ` · 24h: ${change24h > 0 ? "+" : ""}${Math.round(change24h)}c` : ""}`
+                                : change24h !== null ? `24h: ${change24h > 0 ? "+" : ""}${Math.round(change24h)}c` : undefined
+                            }
                           >
                             {(() => {
                               const pct = marketProb * 100;
@@ -356,6 +367,9 @@ export default function StationCard({
                                 : String(Math.round(pct));
                             })()}%
                           </span>
+                          {marketIsStale && (
+                            <div className="text-[9px] text-gray-400 italic mt-0.5">stale</div>
+                          )}
                           {change6h !== null && Math.abs(change6h) > 2 && (
                             <div className={`text-[10px] tabular-nums mt-0.5 font-semibold ${
                               change6h > 0 ? "text-green-600" : "text-red-600"

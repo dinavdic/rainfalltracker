@@ -128,6 +128,7 @@ export interface KalshiMarketPrice {
   yesBid: number | null;
   yesAsk: number | null;
   volume: number;
+  isStale: boolean; // true when bid/ask unavailable, falling back to lastPrice
 }
 
 export interface KalshiStationData {

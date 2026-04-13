@@ -18,9 +18,6 @@ const NWS_POINTS_BASE = "https://api.weather.gov/points";
 const OPEN_METEO_ENSEMBLE_BASE =
   "https://ensemble-api.open-meteo.com/v1/ensemble";
 
-const GEFS_MEMBERS = 31; // GEFS members 0-30
-const ECMWF_MEMBERS = 51; // ECMWF members 0-50
-
 // In-memory cache of resolved grid coordinates
 const resolvedGridCache: Record<string, NWSGridInfo> = {};
 
@@ -130,8 +127,7 @@ async function fetchSingleModelEnsemble(
   lat: number,
   lon: number,
   stationCode: string,
-  model: string,
-  memberCount: number
+  model: string
 ): Promise<{ memberSums: number[]; forecastDays: number }> {
   const url =
     `${OPEN_METEO_ENSEMBLE_BASE}?latitude=${lat}&longitude=${lon}` +
@@ -155,6 +151,30 @@ async function fetchSingleModelEnsemble(
       `Open-Meteo ${model} response missing hourly data for ${stationCode}`
     );
   }
+
+  // Auto-detect ensemble member keys from the response
+  const allKeys = Object.keys(hourly);
+  const memberKeys = allKeys
+    .filter((k) => k.startsWith("precipitation_member"))
+    .sort((a, b) => {
+      const numA = parseInt(a.replace("precipitation_member", ""), 10);
+      const numB = parseInt(b.replace("precipitation_member", ""), 10);
+      return numA - numB;
+    });
+
+  if (memberKeys.length === 0) {
+    // Log all hourly keys for debugging
+    const sampleKeys = allKeys.slice(0, 20).join(", ");
+    throw new Error(
+      `Open-Meteo ${model} for ${stationCode}: no precipitation_member* keys found. ` +
+      `Hourly keys (${allKeys.length}): [${sampleKeys}]`
+    );
+  }
+
+  console.log(
+    `[ensemble] ${stationCode} ${model}: found ${memberKeys.length} member keys ` +
+    `(${memberKeys[0]}..${memberKeys[memberKeys.length - 1]})`
+  );
 
   const times: string[] = hourly.time;
   const now = new Date();
@@ -184,15 +204,13 @@ async function fetchSingleModelEnsemble(
       )
     : 0;
 
-  // Sum precipitation for each ensemble member across valid hours
+  // Sum precipitation for each detected ensemble member across valid hours
   const memberSums: number[] = [];
 
-  for (let m = 0; m < memberCount; m++) {
-    const key = `precipitation_member${m}`;
+  for (const key of memberKeys) {
     const memberData: (number | null)[] | undefined = hourly[key];
 
     if (!memberData) {
-      // If a member is missing, use 0
       memberSums.push(0);
       continue;
     }
@@ -223,7 +241,7 @@ async function fetchCombinedEnsemble(
 ): Promise<EnsembleData> {
   // Fetch GEFS first (rate-limited — caller handles the first delay)
   const gefsResult = await fetchSingleModelEnsemble(
-    lat, lon, stationCode, "gfs_seamless", GEFS_MEMBERS
+    lat, lon, stationCode, "gfs_seamless"
   );
 
   // Rate limit before ECMWF request
@@ -235,10 +253,12 @@ async function fetchCombinedEnsemble(
   lastOpenMeteoRequest = Date.now();
 
   // Fetch ECMWF (non-fatal if it fails)
+  // Model name is ecmwf_ifs025 — the 0.25° ensemble model.
+  // "ecmwf_ifs" is the deterministic/HRES model with no per-member fields.
   let ecmwfResult: { memberSums: number[]; forecastDays: number } | null = null;
   try {
     ecmwfResult = await fetchSingleModelEnsemble(
-      lat, lon, stationCode, "ecmwf_ifs", ECMWF_MEMBERS
+      lat, lon, stationCode, "ecmwf_ifs025"
     );
     console.log(`[ensemble] ${stationCode}: ECMWF OK (${ecmwfResult.memberSums.length} members)`);
   } catch (e) {

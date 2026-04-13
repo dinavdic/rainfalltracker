@@ -214,10 +214,12 @@ export default function StationCard({
 
             // Model range info
             const hasModelRange = t.gefsProb !== null && t.ecmwfProb !== null;
+            const singleModel = t.gefsProb !== null && t.ecmwfProb === null;
             const loProb = hasModelRange ? Math.min(t.gefsProb!, t.ecmwfProb!) : 0;
             const hiProb = hasModelRange ? Math.max(t.gefsProb!, t.ecmwfProb!) : 0;
             const spread = hasModelRange ? (hiProb - loProb) * 100 : 0;
-            const showRange = hasModelRange && spread > 5;
+            const pctMain = t.ensembleProbability * 100;
+            const showRange = hasModelRange && spread > 2 && pctMain > 1 && pctMain < 99;
 
             // Edge range info
             const worstEdge = showRange && marketProb !== null
@@ -265,6 +267,11 @@ export default function StationCard({
                     {hasModelRange && spread > 15 && (
                       <div className="text-[10px] text-gray-400 tabular-nums mt-0.5">
                         G:{Math.round(t.gefsProb! * 100)}/E:{Math.round(t.ecmwfProb! * 100)}
+                      </div>
+                    )}
+                    {singleModel && (
+                      <div className="text-[10px] text-gray-400 italic mt-0.5">
+                        (single model)
                       </div>
                     )}
                   </td>

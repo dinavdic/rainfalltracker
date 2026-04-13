@@ -110,6 +110,49 @@ function DivergenceSparkline({ data }: { data: { t: string; div: number }[] }) {
   );
 }
 
+function MiniSparkline({
+  data,
+  color,
+  label,
+}: {
+  data: { timestamp: string; value: number }[];
+  color: string;
+  label: string;
+}) {
+  const W = 40;
+  const H = 14;
+  const pad = 1;
+
+  if (data.length < 2) return null;
+
+  const values = data.map((d) => d.value);
+  const minV = Math.min(...values);
+  const maxV = Math.max(...values);
+  const range = Math.max(maxV - minV, 0.001);
+
+  const points = data.map((d, i) => {
+    const x = pad + (i / (data.length - 1)) * (W - 2 * pad);
+    const y = H - pad - ((d.value - minV) / range) * (H - 2 * pad);
+    return `${x.toFixed(1)},${y.toFixed(1)}`;
+  });
+
+  return (
+    <span className="inline-flex flex-col items-center">
+      <svg width={W} height={H} className="block">
+        <polyline
+          points={points.join(" ")}
+          fill="none"
+          stroke={color}
+          strokeWidth="1.5"
+          strokeLinecap="round"
+          strokeLinejoin="round"
+        />
+      </svg>
+      <span className="text-[9px] text-gray-400 leading-none">{label}</span>
+    </span>
+  );
+}
+
 export default function StationCard({
   code,
   city,
@@ -380,11 +423,129 @@ export default function StationCard({
       )}
 
       {/* Ensemble momentum */}
-      {momentum && momentum.regime !== "insufficient_data" && (
-        <div className="text-[11px] text-gray-500 mb-2">
-          {momentum.regimeDescription}
-        </div>
-      )}
+      {momentum && (() => {
+        const { regime, levelMomentumEMA, spreadMomentumEMA, iqrHistory, medianHistory } = momentum;
+        const isLocking = regime === "locking_wet" || regime === "locking_dry";
+        const hasSparklineData = iqrHistory.length >= 4 && medianHistory.length >= 4;
+
+        const levelRate = levelMomentumEMA !== null
+          ? `${levelMomentumEMA >= 0 ? "+" : ""}${levelMomentumEMA.toFixed(2)}"/hr`
+          : null;
+        const spreadRate = spreadMomentumEMA !== null
+          ? `${spreadMomentumEMA >= 0 ? "+" : ""}${spreadMomentumEMA.toFixed(2)}"/hr`
+          : null;
+
+        // Row styling: locking regimes get highlight background
+        const rowClass = isLocking
+          ? "text-xs mb-2 flex items-center gap-1.5 flex-wrap rounded px-1.5 py-1 -mx-1.5 bg-gray-50 border border-gray-100"
+          : "text-[11px] mb-2 flex items-center gap-1.5 flex-wrap";
+
+        if (regime === "insufficient_data") {
+          return (
+            <div className="text-[11px] mb-2 text-gray-400 italic">
+              Momentum: Collecting data...
+            </div>
+          );
+        }
+
+        if (regime === "locking_wet") {
+          return (
+            <div className={rowClass}>
+              <span className="text-gray-500">Momentum:</span>
+              <span className="font-semibold text-green-700">
+                {"\uD83D\uDD12"} Locking in wet
+              </span>
+              {levelRate && (
+                <span className="text-green-600 tabular-nums">({levelRate})</span>
+              )}
+              <span className="text-gray-300">&middot;</span>
+              <span className="text-green-600">
+                Spread tightening
+              </span>
+              {spreadRate && (
+                <span className="text-green-600 tabular-nums">({spreadRate})</span>
+              )}
+              {hasSparklineData ? (
+                <span className="inline-flex gap-1 ml-auto">
+                  <MiniSparkline data={iqrHistory} color="#16a34a" label="spread" />
+                  <MiniSparkline data={medianHistory} color="#16a34a" label="level" />
+                </span>
+              ) : (
+                <span className="text-gray-400 italic ml-auto">Collecting data...</span>
+              )}
+            </div>
+          );
+        }
+
+        if (regime === "locking_dry") {
+          return (
+            <div className={rowClass}>
+              <span className="text-gray-500">Momentum:</span>
+              <span className="font-semibold text-red-700">
+                {"\uD83D\uDD12"} Locking in dry
+              </span>
+              {levelRate && (
+                <span className="text-red-600 tabular-nums">({levelRate})</span>
+              )}
+              <span className="text-gray-300">&middot;</span>
+              <span className="text-green-600">
+                Spread tightening
+              </span>
+              {spreadRate && (
+                <span className="text-green-600 tabular-nums">({spreadRate})</span>
+              )}
+              {hasSparklineData ? (
+                <span className="inline-flex gap-1 ml-auto">
+                  <MiniSparkline data={iqrHistory} color="#16a34a" label="spread" />
+                  <MiniSparkline data={medianHistory} color="#dc2626" label="level" />
+                </span>
+              ) : (
+                <span className="text-gray-400 italic ml-auto">Collecting data...</span>
+              )}
+            </div>
+          );
+        }
+
+        if (regime === "destabilizing") {
+          return (
+            <div className={rowClass}>
+              <span className="text-gray-500">Momentum:</span>
+              <span className="font-semibold text-amber-600">
+                {"\u26A0"} Destabilizing
+              </span>
+              <span className="text-gray-300">&middot;</span>
+              <span className="text-red-600">
+                Spread widening
+              </span>
+              {spreadRate && (
+                <span className="text-red-600 tabular-nums">({spreadRate})</span>
+              )}
+              {hasSparklineData ? (
+                <span className="inline-flex gap-1 ml-auto">
+                  <MiniSparkline data={iqrHistory} color="#dc2626" label="spread" />
+                  <MiniSparkline data={medianHistory} color="#9ca3af" label="level" />
+                </span>
+              ) : (
+                <span className="text-gray-400 italic ml-auto">Collecting data...</span>
+              )}
+            </div>
+          );
+        }
+
+        // stable
+        return (
+          <div className={rowClass}>
+            <span className="text-gray-500">Momentum:</span>
+            <span className="text-gray-500">{"\u2192"} Stable</span>
+            {hasSparklineData && (
+              <span className="inline-flex gap-1 ml-auto">
+                <MiniSparkline data={iqrHistory} color="#9ca3af" label="spread" />
+                <MiniSparkline data={medianHistory} color="#9ca3af" label="level" />
+              </span>
+            )}
+          </div>
+        );
+      })()}
 
       {/* Forecast summary line */}
       <div className="text-xs text-gray-400">

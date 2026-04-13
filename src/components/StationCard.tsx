@@ -2,6 +2,7 @@
 
 import { ThresholdProbability, EnsembleData, KalshiStationData } from "@/lib/types";
 import { StationConvergence } from "@/lib/convergence";
+import { EnsembleMomentum } from "@/lib/momentum";
 
 interface StationCardProps {
   code: string;
@@ -13,6 +14,7 @@ interface StationCardProps {
   thresholds: ThresholdProbability[];
   convergence: StationConvergence | null;
   divergenceHistory: { t: string; div: number }[];
+  momentum: EnsembleMomentum | null;
   kalshi: KalshiStationData | null;
   lastDate: string | null;
   error?: string;
@@ -118,6 +120,7 @@ export default function StationCard({
   thresholds,
   convergence,
   divergenceHistory,
+  momentum,
   kalshi,
   lastDate,
   error,
@@ -373,6 +376,13 @@ export default function StationCard({
               </>
             );
           })()}
+        </div>
+      )}
+
+      {/* Ensemble momentum */}
+      {momentum && momentum.regime !== "insufficient_data" && (
+        <div className="text-[11px] text-gray-500 mb-2">
+          {momentum.regimeDescription}
         </div>
       )}
 

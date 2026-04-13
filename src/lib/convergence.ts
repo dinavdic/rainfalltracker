@@ -10,6 +10,11 @@ export interface StationSnapshot {
   gefsP75: number | null;
   ecmwfP25: number | null;
   ecmwfP75: number | null;
+  // Combined ensemble distribution (all 82 members)
+  combinedMedian: number | null;
+  combinedIQR: number | null; // p75 - p25
+  combinedP10: number | null;
+  combinedP90: number | null;
   thresholds: Record<
     string,
     { gefsProb: number | null; ecmwfProb: number | null; combinedProb: number }
@@ -89,6 +94,10 @@ export function saveSnapshot(
       gefsP75: ens?.modelBreakdown?.gefs.p75 ?? null,
       ecmwfP25: ens?.modelBreakdown?.ecmwf.p25 ?? null,
       ecmwfP75: ens?.modelBreakdown?.ecmwf.p75 ?? null,
+      combinedMedian: ens?.stats.median ?? null,
+      combinedIQR: ens ? (ens.stats.p75 - ens.stats.p25) : null,
+      combinedP10: ens?.stats.p10 ?? null,
+      combinedP90: ens?.stats.p90 ?? null,
       thresholds: {},
     };
 

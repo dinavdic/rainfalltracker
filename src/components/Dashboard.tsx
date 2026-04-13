@@ -16,6 +16,7 @@ import {
   computeAllConvergence,
   getDivergenceHistory,
 } from "@/lib/convergence";
+import { computeAllMomentum } from "@/lib/momentum";
 import StationCard from "./StationCard";
 import CumulativeChart from "./CumulativeChart";
 
@@ -131,8 +132,8 @@ export default function Dashboard() {
     }
   }, [rainfall, stationProbs]);
 
-  // Compute convergence metrics from snapshot history
-  const { convergenceMap, divergenceHistories } = useMemo(() => {
+  // Compute convergence and momentum metrics from snapshot history
+  const { convergenceMap, divergenceHistories, momentumMap } = useMemo(() => {
     const snapshots = loadSnapshots();
 
     // Build Kalshi threshold keys per station for convergence filtering
@@ -150,7 +151,8 @@ export default function Dashboard() {
       const keySet = keys && keys.length > 0 ? new Set(keys) : null;
       dHist[station.code] = getDivergenceHistory(station.code, snapshots, keySet);
     }
-    return { convergenceMap: cMap, divergenceHistories: dHist };
+    const mMap = computeAllMomentum(snapshots);
+    return { convergenceMap: cMap, divergenceHistories: dHist, momentumMap: mMap };
     // Re-compute after snapshot is saved (rainfall change triggers save)
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [rainfall, kalshi]);
@@ -236,6 +238,7 @@ export default function Dashboard() {
                 }
                 convergence={convergenceMap[station.code] ?? null}
                 divergenceHistory={divergenceHistories[station.code] ?? []}
+                momentum={momentumMap[station.code] ?? null}
                 kalshi={kalshi?.stations[station.code] ?? null}
                 lastDate={rainData?.lastUpdated ?? null}
                 error={rainData?.error}

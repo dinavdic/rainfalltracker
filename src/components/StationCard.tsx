@@ -1,8 +1,11 @@
 "use client";
 
+import { useState, useMemo, Fragment } from "react";
 import { ThresholdProbability, EnsembleData, KalshiStationData } from "@/lib/types";
+import { ForecastSnapshot } from "@/lib/convergence";
 import { StationConvergence, KalshiDelta } from "@/lib/convergence";
 import { EnsembleMomentum } from "@/lib/momentum";
+import ProbabilityTrendChart, { TrendDataPoint } from "./ProbabilityTrendChart";
 
 interface StationCardProps {
   code: string;
@@ -17,6 +20,7 @@ interface StationCardProps {
   momentum: EnsembleMomentum | null;
   kalshiDeltas: KalshiDelta | null;
   kalshi: KalshiStationData | null;
+  snapshots: ForecastSnapshot[];
   lastDate: string | null;
   error?: string;
 }
@@ -168,14 +172,41 @@ export default function StationCard({
   momentum,
   kalshiDeltas,
   kalshi,
+  snapshots,
   lastDate,
   error,
 }: StationCardProps) {
+  const [openChart, setOpenChart] = useState<string | null>(null);
+
+  // Extract trend data for the currently open chart from snapshot history
+  const trendData: TrendDataPoint[] = useMemo(() => {
+    if (!openChart || !snapshots.length) return [];
+    return snapshots
+      .map((snap) => {
+        const st = snap.stations[code];
+        if (!st) return null;
+        const thresh = st.thresholds[openChart];
+        if (!thresh) return null;
+        return {
+          timestamp: snap.timestamp,
+          combinedProb: thresh.combinedProb,
+          gefsProb: thresh.gefsProb,
+          ecmwfProb: thresh.ecmwfProb,
+          marketProb: st.kalshiPrices?.[openChart] ?? null,
+        };
+      })
+      .filter((d): d is TrendDataPoint => d !== null);
+  }, [openChart, snapshots, code]);
+
   const mtdValue = mtd ?? 0;
   const progressPct = Math.min((mtdValue / 5.0) * 100, 100);
   const hasForecast = ensemble !== null || qpfSum !== null;
   const hasKalshi =
     kalshi !== null && Object.keys(kalshi.thresholds).length > 0;
+
+  // Column count for chart row colSpan
+  const colCount =
+    4 + (hasForecast ? 1 : 0) + (hasKalshi ? 1 : 0) + (hasKalshi && hasForecast ? 1 : 0);
 
   // Total volume across all thresholds for this station
   const totalVolume = hasKalshi
@@ -296,8 +327,11 @@ export default function StationCard({
                 ? "bg-red-50/60"
                 : "";
 
+            const isChartOpen = openChart === thresholdKey;
+
             return (
-              <tr key={t.threshold} className={`border-t border-gray-50 ${rowHighlight}`}>
+              <Fragment key={t.threshold}>
+              <tr className={`border-t border-gray-50 ${rowHighlight}`}>
                 <td className="py-1.5 text-gray-700 font-medium">
                   &gt;{t.threshold}&quot;
                 </td>
@@ -324,8 +358,14 @@ export default function StationCard({
                   <ProbabilityBadge value={t.climatologyProbability} />
                 </td>
                 {hasForecast && (
-                  <td className="py-1.5 text-right">
-                    <ProbabilityBadge value={t.ensembleProbability} />
+                  <td
+                    className="py-1.5 text-right cursor-pointer"
+                    onClick={() => setOpenChart(isChartOpen ? null : thresholdKey)}
+                    title="Click to view probability trend"
+                  >
+                    <span className={isChartOpen ? "ring-2 ring-blue-300 ring-offset-1 rounded" : ""}>
+                      <ProbabilityBadge value={t.ensembleProbability} />
+                    </span>
                     {showRange && (
                       <div className="text-[10px] text-gray-400 tabular-nums mt-0.5">
                         ({Math.round(loProb * 100)}&ndash;{Math.round(hiProb * 100)}%)
@@ -403,6 +443,20 @@ export default function StationCard({
                   </>
                 )}
               </tr>
+              {isChartOpen && (
+                <tr>
+                  <td colSpan={colCount} className="p-0">
+                    <ProbabilityTrendChart
+                      stationCode={code}
+                      threshold={thresholdKey}
+                      climatologyProb={t.climatologyProbability}
+                      data={trendData}
+                      onClose={() => setOpenChart(null)}
+                    />
+                  </td>
+                </tr>
+              )}
+              </Fragment>
             );
           })}
         </tbody>

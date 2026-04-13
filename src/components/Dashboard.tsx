@@ -149,7 +149,7 @@ export default function Dashboard() {
   }, [rainfall, stationProbs, kalshi]);
 
   // Compute convergence, momentum, and Kalshi delta metrics from snapshot history
-  const { convergenceMap, divergenceHistories, momentumMap, kalshiDeltaMap } = useMemo(() => {
+  const { convergenceMap, divergenceHistories, momentumMap, kalshiDeltaMap, mergedSnapshots } = useMemo(() => {
     // Merge server-side (Blob) and client-side (localStorage) snapshots,
     // deduplicating by timestamp so we get a complete history
     const localSnaps = loadSnapshots();
@@ -180,7 +180,13 @@ export default function Dashboard() {
     }
     const mMap = computeAllMomentum(snapshots);
     const kMap = computeAllKalshiDeltas(snapshots);
-    return { convergenceMap: cMap, divergenceHistories: dHist, momentumMap: mMap, kalshiDeltaMap: kMap };
+    return {
+      convergenceMap: cMap,
+      divergenceHistories: dHist,
+      momentumMap: mMap,
+      kalshiDeltaMap: kMap,
+      mergedSnapshots: snapshots,
+    };
     // Re-compute after snapshot is saved (rainfall change triggers save)
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [rainfall, kalshi, serverSnapshots]);
@@ -269,6 +275,7 @@ export default function Dashboard() {
                 momentum={momentumMap[station.code] ?? null}
                 kalshiDeltas={kalshiDeltaMap[station.code] ?? null}
                 kalshi={kalshi?.stations[station.code] ?? null}
+                snapshots={mergedSnapshots}
                 lastDate={rainData?.lastUpdated ?? null}
                 error={rainData?.error}
               />

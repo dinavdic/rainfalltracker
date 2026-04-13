@@ -138,3 +138,23 @@ export interface KalshiApiResponse {
   fetchedAt: string;
   discoveryLog: string[]; // ticker discovery debug info
 }
+
+// --- Skill curves (forecast verification) ---
+
+export interface SkillCurveData {
+  raw: number[]; // 16 elements, lead day 1..16
+  fitted_params: { model: string; a: number; b: number };
+  fitted: number[]; // 16 elements, smoothed exponential decay
+}
+
+export interface StationSkillCurves {
+  daily_skill: SkillCurveData;
+  accumulated_skill: SkillCurveData;
+  sample_count: number;
+  verification_period: string;
+  daily_rmse_forecast: number;
+  daily_rmse_climo: number;
+  placeholder?: boolean; // true if using default values (not yet verified)
+}
+
+export type SkillCurvesData = Record<string, StationSkillCurves>;

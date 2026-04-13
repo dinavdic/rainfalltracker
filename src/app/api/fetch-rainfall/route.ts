@@ -6,6 +6,7 @@ import {
   NWSGridInfo,
   EnsembleData,
   EnsembleStats,
+  ModelBreakdown,
 } from "@/lib/types";
 import { saveRainfallData, loadRainfallData, isCacheFresh } from "@/lib/data-store";
 
@@ -17,7 +18,8 @@ const NWS_POINTS_BASE = "https://api.weather.gov/points";
 const OPEN_METEO_ENSEMBLE_BASE =
   "https://ensemble-api.open-meteo.com/v1/ensemble";
 
-const ENSEMBLE_MEMBERS = 31; // GEFS members 0-30
+const GEFS_MEMBERS = 31; // GEFS members 0-30
+const ECMWF_MEMBERS = 51; // ECMWF members 0-50
 
 // In-memory cache of resolved grid coordinates
 const resolvedGridCache: Record<string, NWSGridInfo> = {};
@@ -117,21 +119,23 @@ function computeEnsembleStats(values: number[]): EnsembleStats {
 }
 
 /**
- * Fetch GEFS ensemble precipitation from Open-Meteo for a station.
+ * Fetch ensemble precipitation from Open-Meteo for a single model.
  *
- * Sums hourly precipitation for each of 31 ensemble members, only counting
+ * Sums hourly precipitation for each ensemble member, only counting
  * hours that fall within the remainder of the current month.
  *
  * Returns the per-member sums (in inches) and how many forecast days are covered.
  */
-async function fetchEnsemble(
+async function fetchSingleModelEnsemble(
   lat: number,
   lon: number,
-  stationCode: string
-): Promise<EnsembleData> {
+  stationCode: string,
+  model: string,
+  memberCount: number
+): Promise<{ memberSums: number[]; forecastDays: number }> {
   const url =
     `${OPEN_METEO_ENSEMBLE_BASE}?latitude=${lat}&longitude=${lon}` +
-    `&models=gfs_seamless&hourly=precipitation&forecast_days=16`;
+    `&models=${model}&hourly=precipitation&forecast_days=16`;
 
   const resp = await fetch(url, {
     signal: AbortSignal.timeout(20000),
@@ -139,7 +143,7 @@ async function fetchEnsemble(
 
   if (!resp.ok) {
     throw new Error(
-      `Open-Meteo ensemble fetch failed for ${stationCode}: ${resp.status} ${resp.statusText}`
+      `Open-Meteo ${model} fetch failed for ${stationCode}: ${resp.status} ${resp.statusText}`
     );
   }
 
@@ -148,7 +152,7 @@ async function fetchEnsemble(
 
   if (!hourly || !hourly.time) {
     throw new Error(
-      `Open-Meteo response missing hourly data for ${stationCode}`
+      `Open-Meteo ${model} response missing hourly data for ${stationCode}`
     );
   }
 
@@ -183,7 +187,7 @@ async function fetchEnsemble(
   // Sum precipitation for each ensemble member across valid hours
   const memberSums: number[] = [];
 
-  for (let m = 0; m < ENSEMBLE_MEMBERS; m++) {
+  for (let m = 0; m < memberCount; m++) {
     const key = `precipitation_member${m}`;
     const memberData: (number | null)[] | undefined = hourly[key];
 
@@ -205,9 +209,81 @@ async function fetchEnsemble(
     memberSums.push(Math.round((sumMm / 25.4) * 100) / 100);
   }
 
-  const stats = computeEnsembleStats(memberSums);
+  return { memberSums, forecastDays };
+}
 
-  return { memberSums, forecastDays, stats };
+/**
+ * Fetch both GEFS and ECMWF ensembles, combine into a multi-model ensemble.
+ * Falls back to GEFS-only if ECMWF fails.
+ */
+async function fetchCombinedEnsemble(
+  lat: number,
+  lon: number,
+  stationCode: string
+): Promise<EnsembleData> {
+  // Fetch GEFS first (rate-limited — caller handles the first delay)
+  const gefsResult = await fetchSingleModelEnsemble(
+    lat, lon, stationCode, "gfs_seamless", GEFS_MEMBERS
+  );
+
+  // Rate limit before ECMWF request
+  const now = Date.now();
+  const elapsed = now - lastOpenMeteoRequest;
+  if (elapsed < 1000) {
+    await new Promise((resolve) => setTimeout(resolve, 1000 - elapsed));
+  }
+  lastOpenMeteoRequest = Date.now();
+
+  // Fetch ECMWF (non-fatal if it fails)
+  let ecmwfResult: { memberSums: number[]; forecastDays: number } | null = null;
+  try {
+    ecmwfResult = await fetchSingleModelEnsemble(
+      lat, lon, stationCode, "ecmwf_ifs", ECMWF_MEMBERS
+    );
+    console.log(`[ensemble] ${stationCode}: ECMWF OK (${ecmwfResult.memberSums.length} members)`);
+  } catch (e) {
+    console.warn(
+      `[ensemble] ${stationCode}: ECMWF failed (${e instanceof Error ? e.message : String(e)}), using GEFS-only`
+    );
+  }
+
+  const gefsSums = gefsResult.memberSums;
+  const ecmwfSums = ecmwfResult?.memberSums ?? [];
+  const combinedSums = [...gefsSums, ...ecmwfSums];
+  const forecastDays = Math.max(
+    gefsResult.forecastDays,
+    ecmwfResult?.forecastDays ?? 0
+  );
+
+  const gefsStats = computeEnsembleStats(gefsSums);
+  const combinedStats = computeEnsembleStats(combinedSums);
+
+  let modelBreakdown: ModelBreakdown | null = null;
+  if (ecmwfSums.length > 0) {
+    const ecmwfStats = computeEnsembleStats(ecmwfSums);
+    modelBreakdown = {
+      gefs: gefsStats,
+      ecmwf: ecmwfStats,
+      combined: combinedStats,
+    };
+    console.log(
+      `[ensemble] ${stationCode}: Combined ${gefsSums.length}+${ecmwfSums.length}=${combinedSums.length} members, ` +
+      `median GEFS=${gefsStats.median}" ECMWF=${ecmwfStats.median}" combined=${combinedStats.median}"`
+    );
+  } else {
+    console.log(
+      `[ensemble] ${stationCode}: GEFS-only ${gefsSums.length} members, median=${gefsStats.median}"`
+    );
+  }
+
+  return {
+    memberSums: combinedSums,
+    gefsMemberSums: gefsSums,
+    ecmwfMemberSums: ecmwfSums,
+    modelBreakdown,
+    forecastDays,
+    stats: combinedStats,
+  };
 }
 
 // --- NWS deterministic QPF (fallback) ---
@@ -343,7 +419,7 @@ async function rateLimitedEnsembleFetch(
     await new Promise((resolve) => setTimeout(resolve, 1000 - elapsed));
   }
   lastOpenMeteoRequest = Date.now();
-  return fetchEnsemble(lat, lon, stationCode);
+  return fetchCombinedEnsemble(lat, lon, stationCode);
 }
 
 export async function GET(request: NextRequest) {

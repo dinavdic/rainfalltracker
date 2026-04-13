@@ -245,11 +245,18 @@ export default function StationCard({
       <div className="text-xs text-gray-400">
         {ensemble ? (
           <>
-            Ensemble QPF: {ensemble.stats.median.toFixed(2)}&quot;{" "}
+            {ensemble.modelBreakdown ? "Multi-model" : "Ensemble"} QPF:{" "}
+            {ensemble.stats.median.toFixed(2)}&quot;{" "}
             <span className="text-gray-300">
               ({ensemble.stats.p10.toFixed(2)}&quot; &ndash;{" "}
               {ensemble.stats.p90.toFixed(2)}&quot;)
             </span>
+            {ensemble.modelBreakdown && (
+              <span className="text-gray-300">
+                {" "}&middot; GEFS: {ensemble.modelBreakdown.gefs.median.toFixed(2)}&quot;
+                {" "}/ ECMWF: {ensemble.modelBreakdown.ecmwf.median.toFixed(2)}&quot;
+              </span>
+            )}
           </>
         ) : qpfSum !== null ? (
           <>NWS QPF (fallback): {qpfSum.toFixed(2)}&quot;</>

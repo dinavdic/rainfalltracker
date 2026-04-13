@@ -63,10 +63,19 @@ export interface EnsembleStats {
   p90: number;
 }
 
+export interface ModelBreakdown {
+  gefs: EnsembleStats;
+  ecmwf: EnsembleStats;
+  combined: EnsembleStats;
+}
+
 export interface EnsembleData {
-  memberSums: number[]; // 31 member totals in inches (remaining-in-month precip)
+  memberSums: number[]; // all combined member sums (up to 82: 31 GEFS + 51 ECMWF)
+  gefsMemberSums: number[]; // 31 GEFS members
+  ecmwfMemberSums: number[]; // 51 ECMWF members (empty if ECMWF failed)
+  modelBreakdown: ModelBreakdown | null; // null if only one model available
   forecastDays: number; // how many days of the month the forecast covers
-  stats: EnsembleStats;
+  stats: EnsembleStats; // combined stats (backward compat)
 }
 
 export interface StationRainfallData {

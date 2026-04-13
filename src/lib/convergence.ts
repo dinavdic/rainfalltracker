@@ -1,4 +1,8 @@
-import { RainfallApiResponse, StationProbabilities } from "./types";
+import {
+  RainfallApiResponse,
+  StationProbabilities,
+  KalshiApiResponse,
+} from "./types";
 
 // --- Snapshot types ---
 
@@ -19,6 +23,8 @@ export interface StationSnapshot {
     string,
     { gefsProb: number | null; ecmwfProb: number | null; combinedProb: number }
   >;
+  // Kalshi mid-prices in cents (0-100); absent if Kalshi data unavailable
+  kalshiPrices?: Record<string, number>;
 }
 
 export interface ForecastSnapshot {
@@ -75,6 +81,7 @@ function persistSnapshots(snapshots: ForecastSnapshot[]): void {
 export function saveSnapshot(
   rainfall: RainfallApiResponse,
   stationProbs: Record<string, StationProbabilities>,
+  kalshi?: KalshiApiResponse | null,
 ): void {
   const now = new Date();
   const snapshot: ForecastSnapshot = {
@@ -108,6 +115,26 @@ export function saveSnapshot(
           ecmwfProb: t.ecmwfProb,
           combinedProb: t.ensembleProbability,
         };
+      }
+    }
+
+    // Store Kalshi mid-prices in cents
+    const kalshiStation = kalshi?.stations[code];
+    if (kalshiStation) {
+      const prices: Record<string, number> = {};
+      for (const [thresh, mkt] of Object.entries(kalshiStation.thresholds)) {
+        let mid: number | null = null;
+        if (mkt.yesBid !== null && mkt.yesAsk !== null) {
+          mid = (mkt.yesBid + mkt.yesAsk) / 2;
+        } else if (mkt.lastPrice !== null) {
+          mid = mkt.lastPrice;
+        }
+        if (mid !== null) {
+          prices[thresh] = Math.round(mid * 100) / 100;
+        }
+      }
+      if (Object.keys(prices).length > 0) {
+        stationSnap.kalshiPrices = prices;
       }
     }
 
@@ -258,6 +285,117 @@ export function getDivergenceHistory(
       div: getMaxThresholdDiv(st, kalshiKeys),
     });
   }
+  return result;
+}
+
+// --- Kalshi price delta types ---
+
+export type PriceTrend = "rising" | "falling" | "stable";
+
+export interface ThresholdPriceDelta {
+  current: number; // current price in cents
+  change3h: number | null;
+  change6h: number | null;
+  change24h: number | null;
+  trend: PriceTrend; // based on change6h
+}
+
+export type KalshiDelta = Record<string, ThresholdPriceDelta>;
+
+const HOUR_MS = 60 * 60 * 1000;
+const WINDOW_TOLERANCE_MS = 1 * HOUR_MS; // ±1 hour tolerance for finding snapshots
+
+/**
+ * Find the snapshot closest to `targetMs` that's within ±tolerance.
+ * Returns the station snapshot or null.
+ */
+function findSnapshotNear(
+  stationCode: string,
+  snapshots: ForecastSnapshot[],
+  targetMs: number,
+): StationSnapshot | null {
+  let best: StationSnapshot | null = null;
+  let bestDist = Infinity;
+  for (const snap of snapshots) {
+    const t = new Date(snap.timestamp).getTime();
+    const dist = Math.abs(t - targetMs);
+    if (dist < WINDOW_TOLERANCE_MS && dist < bestDist) {
+      const st = snap.stations[stationCode];
+      if (st?.kalshiPrices) {
+        best = st;
+        bestDist = dist;
+      }
+    }
+  }
+  return best;
+}
+
+/**
+ * Compute Kalshi price deltas for a station from snapshot history.
+ * Returns null if no current Kalshi prices are available.
+ */
+export function computeKalshiDeltas(
+  stationCode: string,
+  snapshots: ForecastSnapshot[],
+): KalshiDelta | null {
+  if (snapshots.length === 0) return null;
+
+  const latest = snapshots[snapshots.length - 1].stations[stationCode];
+  if (!latest?.kalshiPrices || Object.keys(latest.kalshiPrices).length === 0) {
+    return null;
+  }
+
+  const nowMs = new Date(snapshots[snapshots.length - 1].timestamp).getTime();
+  const snap3h = findSnapshotNear(stationCode, snapshots, nowMs - 3 * HOUR_MS);
+  const snap6h = findSnapshotNear(stationCode, snapshots, nowMs - 6 * HOUR_MS);
+  const snap24h = findSnapshotNear(stationCode, snapshots, nowMs - 24 * HOUR_MS);
+
+  const result: KalshiDelta = {};
+
+  for (const [thresh, currentPrice] of Object.entries(latest.kalshiPrices)) {
+    const change3h = snap3h?.kalshiPrices?.[thresh] != null
+      ? currentPrice - snap3h.kalshiPrices[thresh] : null;
+    const change6h = snap6h?.kalshiPrices?.[thresh] != null
+      ? currentPrice - snap6h.kalshiPrices[thresh] : null;
+    const change24h = snap24h?.kalshiPrices?.[thresh] != null
+      ? currentPrice - snap24h.kalshiPrices[thresh] : null;
+
+    let trend: PriceTrend = "stable";
+    if (change6h !== null) {
+      if (change6h > 2) trend = "rising";
+      else if (change6h < -2) trend = "falling";
+    }
+
+    result[thresh] = {
+      current: currentPrice,
+      change3h: change3h !== null ? Math.round(change3h * 100) / 100 : null,
+      change6h: change6h !== null ? Math.round(change6h * 100) / 100 : null,
+      change24h: change24h !== null ? Math.round(change24h * 100) / 100 : null,
+      trend,
+    };
+  }
+
+  return result;
+}
+
+/**
+ * Compute Kalshi deltas for all stations.
+ */
+export function computeAllKalshiDeltas(
+  snapshots: ForecastSnapshot[],
+): Record<string, KalshiDelta> {
+  if (snapshots.length === 0) return {};
+
+  const latest = snapshots[snapshots.length - 1];
+  const result: Record<string, KalshiDelta> = {};
+
+  for (const code of Object.keys(latest.stations)) {
+    const deltas = computeKalshiDeltas(code, snapshots);
+    if (deltas) {
+      result[code] = deltas;
+    }
+  }
+
   return result;
 }
 

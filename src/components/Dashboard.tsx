@@ -15,6 +15,7 @@ import {
   loadSnapshots,
   computeAllConvergence,
   getDivergenceHistory,
+  computeAllKalshiDeltas,
 } from "@/lib/convergence";
 import { computeAllMomentum } from "@/lib/momentum";
 import StationCard from "./StationCard";
@@ -128,12 +129,12 @@ export default function Dashboard() {
   useEffect(() => {
     if (rainfall && Object.keys(stationProbs).length > 0 && !snapshotSaved.current) {
       snapshotSaved.current = true;
-      saveSnapshot(rainfall, stationProbs);
+      saveSnapshot(rainfall, stationProbs, kalshi);
     }
-  }, [rainfall, stationProbs]);
+  }, [rainfall, stationProbs, kalshi]);
 
-  // Compute convergence and momentum metrics from snapshot history
-  const { convergenceMap, divergenceHistories, momentumMap } = useMemo(() => {
+  // Compute convergence, momentum, and Kalshi delta metrics from snapshot history
+  const { convergenceMap, divergenceHistories, momentumMap, kalshiDeltaMap } = useMemo(() => {
     const snapshots = loadSnapshots();
 
     // Build Kalshi threshold keys per station for convergence filtering
@@ -152,7 +153,8 @@ export default function Dashboard() {
       dHist[station.code] = getDivergenceHistory(station.code, snapshots, keySet);
     }
     const mMap = computeAllMomentum(snapshots);
-    return { convergenceMap: cMap, divergenceHistories: dHist, momentumMap: mMap };
+    const kMap = computeAllKalshiDeltas(snapshots);
+    return { convergenceMap: cMap, divergenceHistories: dHist, momentumMap: mMap, kalshiDeltaMap: kMap };
     // Re-compute after snapshot is saved (rainfall change triggers save)
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [rainfall, kalshi]);
@@ -239,6 +241,7 @@ export default function Dashboard() {
                 convergence={convergenceMap[station.code] ?? null}
                 divergenceHistory={divergenceHistories[station.code] ?? []}
                 momentum={momentumMap[station.code] ?? null}
+                kalshiDeltas={kalshiDeltaMap[station.code] ?? null}
                 kalshi={kalshi?.stations[station.code] ?? null}
                 lastDate={rainData?.lastUpdated ?? null}
                 error={rainData?.error}

@@ -1,7 +1,7 @@
 "use client";
 
 import { ThresholdProbability, EnsembleData, KalshiStationData } from "@/lib/types";
-import { StationConvergence } from "@/lib/convergence";
+import { StationConvergence, KalshiDelta } from "@/lib/convergence";
 import { EnsembleMomentum } from "@/lib/momentum";
 
 interface StationCardProps {
@@ -15,6 +15,7 @@ interface StationCardProps {
   convergence: StationConvergence | null;
   divergenceHistory: { t: string; div: number }[];
   momentum: EnsembleMomentum | null;
+  kalshiDeltas: KalshiDelta | null;
   kalshi: KalshiStationData | null;
   lastDate: string | null;
   error?: string;
@@ -164,6 +165,7 @@ export default function StationCard({
   convergence,
   divergenceHistory,
   momentum,
+  kalshiDeltas,
   kalshi,
   lastDate,
   error,
@@ -275,8 +277,24 @@ export default function StationCard({
             const signsAgree = worstEdge !== null && bestEdge !== null
               && ((worstEdge >= 0 && bestEdge >= 0) || (worstEdge < 0 && bestEdge < 0));
 
+            // Kalshi price delta
+            const priceDelta = kalshiDeltas?.[thresholdKey] ?? null;
+            const change6h = priceDelta?.change6h ?? null;
+            const change24h = priceDelta?.change24h ?? null;
+
+            // Opportunity highlight: edge expanding as market moves away from model
+            const longOpportunity = edge !== null && change6h !== null
+              && edge > 10 && change6h < -2;
+            const shortOpportunity = edge !== null && change6h !== null
+              && edge < -10 && change6h > 2;
+            const rowHighlight = longOpportunity
+              ? "bg-green-50/60"
+              : shortOpportunity
+                ? "bg-red-50/60"
+                : "";
+
             return (
-              <tr key={t.threshold} className="border-t border-gray-50">
+              <tr key={t.threshold} className={`border-t border-gray-50 ${rowHighlight}`}>
                 <td className="py-1.5 text-gray-700 font-medium">
                   &gt;{t.threshold}&quot;
                 </td>
@@ -326,14 +344,26 @@ export default function StationCard({
                   <>
                     <td className="py-1.5 text-right">
                       {marketProb !== null ? (
-                        <span className="inline-block px-2 py-0.5 rounded text-xs font-semibold bg-blue-50 text-blue-800 tabular-nums">
-                          {(() => {
-                            const pct = marketProb * 100;
-                            return pct > 0 && pct < 10
-                              ? pct.toFixed(1)
-                              : String(Math.round(pct));
-                          })()}%
-                        </span>
+                        <>
+                          <span
+                            className="inline-block px-2 py-0.5 rounded text-xs font-semibold bg-blue-50 text-blue-800 tabular-nums"
+                            title={change24h !== null ? `24h: ${change24h > 0 ? "+" : ""}${Math.round(change24h)}c` : undefined}
+                          >
+                            {(() => {
+                              const pct = marketProb * 100;
+                              return pct > 0 && pct < 10
+                                ? pct.toFixed(1)
+                                : String(Math.round(pct));
+                            })()}%
+                          </span>
+                          {change6h !== null && Math.abs(change6h) > 2 && (
+                            <div className={`text-[10px] tabular-nums mt-0.5 font-semibold ${
+                              change6h > 0 ? "text-green-600" : "text-red-600"
+                            }`}>
+                              {change6h > 0 ? "\u2191" : "\u2193"}{Math.abs(Math.round(change6h))}
+                            </div>
+                          )}
+                        </>
                       ) : (
                         <span className="text-gray-300">&mdash;</span>
                       )}

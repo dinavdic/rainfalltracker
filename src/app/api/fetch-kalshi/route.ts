@@ -65,7 +65,8 @@ function parseVolume(fp: string | undefined | null): number {
 
 // Rate limiter: enforce minimum gap between Kalshi API requests
 let lastKalshiRequest = 0;
-const KALSHI_MIN_DELAY_MS = 250; // 250ms between requests to stay under rate limits
+const KALSHI_MIN_DELAY_MS = 250; // 250ms for market discovery requests
+const KALSHI_OB_DELAY_MS = 100; // 100ms for lightweight orderbook requests
 
 // Orderbook cache (in-memory, 60s TTL per ticker)
 const orderbookCache = new Map<
@@ -76,17 +77,19 @@ const ORDERBOOK_CACHE_TTL_MS = 60 * 1000;
 
 /**
  * Fetch from Kalshi API with rate limiting and error handling.
+ * @param delayMs - minimum gap since last request (default 250ms, use 100ms for orderbook)
  */
 async function kalshiFetch(
   path: string,
-  log: string[]
+  log: string[],
+  delayMs: number = KALSHI_MIN_DELAY_MS,
 ): Promise<unknown | null> {
   // Enforce rate limit
   const now = Date.now();
   const elapsed = now - lastKalshiRequest;
-  if (elapsed < KALSHI_MIN_DELAY_MS) {
+  if (elapsed < delayMs) {
     await new Promise((resolve) =>
-      setTimeout(resolve, KALSHI_MIN_DELAY_MS - elapsed)
+      setTimeout(resolve, delayMs - elapsed)
     );
   }
   lastKalshiRequest = Date.now();
@@ -139,6 +142,7 @@ async function fetchOrderbook(
   const data = (await kalshiFetch(
     `/markets/${ticker}/orderbook`,
     log,
+    KALSHI_OB_DELAY_MS,
   )) as Record<string, unknown> | null;
 
   if (!data) {
@@ -506,26 +510,18 @@ async function discoverAndFetchMarkets(
     }
   }
 
-  // --- Orderbook refresh: replace stale summary prices with live top-of-book ---
+  // --- Orderbook refresh: replace ALL summary prices with live top-of-book ---
+  // The /markets endpoint returns stale bid/ask data (can be >1 hour old)
+  // even when spreads look tight, so we fetch the orderbook for every market.
   log.push("[kalshi] === Orderbook refresh for live bid/ask ===");
   let orderbookFetches = 0;
-  let orderbookSkips = 0;
   let debuggedFirst = false;
 
   for (const station of STATIONS) {
     for (const [thresholdKey, price] of Object.entries(
       result[station.code].thresholds
     )) {
-      // Skip if the summary spread is already narrow (≤ 15c) — probably fresh
-      if (price.yesBid !== null && price.yesAsk !== null) {
-        const spread = price.yesAsk - price.yesBid;
-        if (spread > 0 && spread <= 15) {
-          orderbookSkips++;
-          continue;
-        }
-      }
-
-      // Fetch live orderbook
+      // Fetch live orderbook for every mapped market
       const isDebug = !debuggedFirst;
       const ob = await fetchOrderbook(price.ticker, log, isDebug);
       if (isDebug) debuggedFirst = true;
@@ -551,9 +547,7 @@ async function discoverAndFetchMarkets(
     }
   }
 
-  log.push(
-    `[kalshi] Orderbook: ${orderbookFetches} fetched, ${orderbookSkips} skipped (spread ≤15c)`
-  );
+  log.push(`[kalshi] Orderbook: ${orderbookFetches} fetched`);
 
   // --- Summary ---
   let totalMapped = 0;

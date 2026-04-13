@@ -5,6 +5,8 @@ import {
   ThresholdProbability,
   StationProbabilities,
   EnsembleData,
+  EnsoPhase,
+  DayDistribution,
 } from "./types";
 import { THRESHOLDS } from "./stations";
 
@@ -28,6 +30,44 @@ function daysInMonth(month: number): number {
 }
 
 /**
+ * Get the ENSO-conditional gamma for a day distribution.
+ * Falls back to the unconditional gamma if the ENSO-conditional one is null.
+ */
+function getEnsoGamma(
+  dayDist: DayDistribution | undefined,
+  ensoPhase: EnsoPhase | null
+): GammaParams | null {
+  if (!dayDist) return null;
+  if (!ensoPhase) return dayDist.gamma;
+
+  const ensoKey = `gamma_${ensoPhase}` as keyof DayDistribution;
+  const ensoGamma = dayDist[ensoKey] as GammaParams | null;
+  // Fall back to unconditional if ENSO-conditional gamma is null (too few years)
+  return ensoGamma ?? dayDist.gamma;
+}
+
+/**
+ * Get the ENSO-conditional base rate for a threshold.
+ * Falls back to unconditional if ENSO-conditional is unavailable.
+ */
+function getEnsoBaseRate(
+  monthData: { base_rates: Record<string, number>; base_rates_nino?: Record<string, number>; base_rates_nina?: Record<string, number>; base_rates_neutral?: Record<string, number> } | undefined,
+  thresholdKey: string,
+  ensoPhase: EnsoPhase | null
+): number {
+  if (!monthData) return 0;
+  if (!ensoPhase) return monthData.base_rates[thresholdKey] ?? 0;
+
+  const ensoRatesKey = `base_rates_${ensoPhase}` as keyof typeof monthData;
+  const ensoRates = monthData[ensoRatesKey] as Record<string, number> | undefined;
+  if (ensoRates && thresholdKey in ensoRates) {
+    return ensoRates[thresholdKey];
+  }
+  // Fall back to unconditional
+  return monthData.base_rates[thresholdKey] ?? 0;
+}
+
+/**
  * Compute conditional probabilities of exceeding rainfall thresholds.
  *
  * Uses ensemble members when available: for each member, check if
@@ -37,6 +77,10 @@ function daysInMonth(month: number): number {
  * Falls back to deterministic QPF blending if only NWS QPF is available,
  * or pure climatology if neither is available.
  *
+ * When ensoPhase is provided, uses ENSO-conditional gamma distributions
+ * and base rates instead of unconditional ones. Falls back to unconditional
+ * if the ENSO-conditional fit is null (too few years).
+ *
  * @param station - Station code (e.g., "SFO")
  * @param month - Current month (1-12)
  * @param dayOfMonth - Current day of month (1-31)
@@ -44,6 +88,7 @@ function daysInMonth(month: number): number {
  * @param ensemble - GEFS ensemble data, or null if unavailable
  * @param qpfSum - NWS deterministic QPF fallback (inches), null if unavailable
  * @param historical - The full historical distributions data
+ * @param ensoPhase - Current ENSO phase for conditional distributions, or null
  */
 export function computeProbabilities(
   station: string,
@@ -52,7 +97,8 @@ export function computeProbabilities(
   mtd: number,
   ensemble: EnsembleData | null,
   qpfSum: number | null,
-  historical: HistoricalData
+  historical: HistoricalData,
+  ensoPhase: EnsoPhase | null = null
 ): StationProbabilities {
   const stationData = historical.stations[station];
   const monthData = stationData?.months[String(month)];
@@ -61,7 +107,8 @@ export function computeProbabilities(
   const daysRemaining = dim - dayOfMonth;
 
   const thresholds: ThresholdProbability[] = THRESHOLDS.map((threshold) => {
-    const baseRate = monthData?.base_rates[threshold.toFixed(1)] ?? 0;
+    const thresholdKey = threshold.toFixed(1);
+    const baseRate = getEnsoBaseRate(monthData, thresholdKey, ensoPhase);
     const remainingNeeded = threshold - mtd;
 
     // Already exceeded
@@ -75,13 +122,14 @@ export function computeProbabilities(
       };
     }
 
-    // --- Pure climatology probability ---
+    // --- Pure climatology probability (ENSO-conditional) ---
     let climatologyProbability = 0;
     const dayKey = String(dayOfMonth);
     const dayDist = monthData?.days[dayKey];
+    const gamma = getEnsoGamma(dayDist, ensoPhase);
 
-    if (dayDist?.gamma) {
-      climatologyProbability = gammaSurvival(remainingNeeded, dayDist.gamma);
+    if (gamma) {
+      climatologyProbability = gammaSurvival(remainingNeeded, gamma);
     }
 
     // --- Ensemble probability ---
@@ -102,14 +150,14 @@ export function computeProbabilities(
         ensembleProbability = exceedCount / ensemble.memberSums.length;
       } else {
         // Forecast ends before EOM — blend each member with climatology tail
-        // For the uncovered tail days, use gamma distribution starting
-        // from the day the forecast ends. Search backward if exact day has no fit.
+        // Use ENSO-conditional gamma for the tail
         const tailStartDay = dayOfMonth + ensemble.forecastDays;
         let tailGamma: GammaParams | null = null;
         for (let d = tailStartDay; d >= dayOfMonth + 1; d--) {
           const dist = monthData?.days[String(d)];
-          if (dist?.gamma) {
-            tailGamma = dist.gamma;
+          const candidate = getEnsoGamma(dist, ensoPhase);
+          if (candidate) {
+            tailGamma = candidate;
             break;
           }
         }
@@ -143,12 +191,10 @@ export function computeProbabilities(
         const climatologyStartDay = dayOfMonth + forecastDays;
         const climatologyDayKey = String(climatologyStartDay);
         const climatologyDist = monthData?.days[climatologyDayKey];
+        const tailGamma = getEnsoGamma(climatologyDist, ensoPhase);
 
-        if (climatologyDist?.gamma) {
-          ensembleProbability = gammaSurvival(
-            neededAfterQpf,
-            climatologyDist.gamma
-          );
+        if (tailGamma) {
+          ensembleProbability = gammaSurvival(neededAfterQpf, tailGamma);
         }
       }
     }

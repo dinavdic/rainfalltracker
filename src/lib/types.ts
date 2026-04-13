@@ -20,9 +20,14 @@ export interface GammaParams {
   zero_fraction: number;
 }
 
+export type EnsoPhase = "nino" | "nina" | "neutral";
+
 export interface DayDistribution {
   percentiles: Record<string, number>;
   gamma: GammaParams | null;
+  gamma_nino: GammaParams | null;
+  gamma_nina: GammaParams | null;
+  gamma_neutral: GammaParams | null;
   n_years: number;
   mean: number;
 }
@@ -39,6 +44,9 @@ export interface MonthDistribution {
   days_in_month: number;
   days: Record<string, DayDistribution>;
   base_rates: Record<string, number>;
+  base_rates_nino: Record<string, number>;
+  base_rates_nina: Record<string, number>;
+  base_rates_neutral: Record<string, number>;
   monthly_totals_percentiles: Record<string, number>;
   cumulative_percentiles: Record<string, CumulativePercentiles>;
 }

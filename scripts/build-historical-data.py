@@ -46,9 +46,20 @@ STATIONS = {
 IEM_BASE = "https://mesonet.agron.iastate.edu/json/cli.py"
 START_YEAR = 1991
 END_YEAR = 2024
-THRESHOLDS = [1.0, 2.0, 3.0, 4.0, 5.0]
+THRESHOLDS = [1.0, 2.0, 3.0, 4.0, 5.0, 6.0, 7.0]
 
 DAYS_IN_MONTH = {1:31, 2:28, 3:31, 4:30, 5:31, 6:30, 7:31, 8:31, 9:30, 10:31, 11:30, 12:31}
+
+# ENSO year classifications (from NOAA ONI)
+ENSO_YEARS_PATH = os.path.join(os.path.dirname(__file__), "..", "public", "data", "enso-years.json")
+
+def load_enso_years() -> dict[int, str]:
+    """Load ENSO classification for each year."""
+    with open(ENSO_YEARS_PATH) as f:
+        raw = json.load(f)
+    return {int(k): v for k, v in raw.items()}
+
+ENSO_PHASES = ["nino", "nina", "neutral"]
 
 
 def fetch_iem_year(icao: str, year: int) -> list[dict]:
@@ -124,15 +135,47 @@ def organize_by_month_year(records: list[dict]) -> dict:
     return data
 
 
-def compute_distributions(monthly_data: dict) -> dict:
+def fit_gamma(values_arr: np.ndarray) -> dict | None:
+    """Fit a zero-inflated gamma distribution. Returns params or None."""
+    positive_vals = values_arr[values_arr > 0]
+    zero_fraction = float(np.mean(values_arr == 0))
+
+    if len(positive_vals) >= 5:
+        try:
+            shape, loc, scale = stats.gamma.fit(positive_vals, floc=0)
+            if math.isfinite(shape) and math.isfinite(scale) and shape > 0 and scale > 0:
+                return {
+                    "shape": round(float(shape), 4),
+                    "scale": round(float(scale), 4),
+                    "zero_fraction": round(zero_fraction, 4),
+                }
+        except Exception:
+            pass
+    return None
+
+
+def compute_base_rates(totals_arr: np.ndarray) -> dict:
+    """Compute exceedance rates for each threshold."""
+    rates = {}
+    for thresh in THRESHOLDS:
+        frac = float(np.mean(totals_arr > thresh))
+        rates[str(thresh)] = round(frac, 4)
+    return rates
+
+
+def compute_distributions(monthly_data: dict, enso_years: dict[int, str]) -> dict:
     """
     For each calendar month (1-12) and each day-of-month (0 through dim-1),
     compute the empirical distribution of remaining-period rainfall
     (from day+1 through end of month).
 
+    Computes both unconditional (all years) and ENSO-conditional
+    (El Niño, La Niña, Neutral) distributions.
+
     Returns a dict keyed by month (1-12) with:
       - days: dict keyed by day (0 through dim-1) with percentiles and gamma params
-      - base_rates: {threshold: fraction}
+      - base_rates: {threshold: fraction}  (unconditional)
+      - base_rates_nino, base_rates_nina, base_rates_neutral: ENSO-conditional
       - monthly_totals_percentiles: percentiles of full-month totals
       - cumulative_percentiles: for chart display
     """
@@ -150,7 +193,13 @@ def compute_distributions(monthly_data: dict) -> dict:
         if not year_months:
             continue
 
-        # Compute full-month totals for base rates
+        # Partition year-months by ENSO phase
+        enso_year_months = {phase: [] for phase in ENSO_PHASES}
+        for (y, m) in year_months:
+            phase = enso_years.get(y, "neutral")
+            enso_year_months[phase].append((y, m))
+
+        # Compute full-month totals for base rates (all years)
         monthly_totals = []
         for (y, m) in year_months:
             days_data = monthly_data[(y, m)]
@@ -158,11 +207,20 @@ def compute_distributions(monthly_data: dict) -> dict:
             monthly_totals.append(total)
 
         monthly_totals_arr = np.array(monthly_totals)
+        base_rates = compute_base_rates(monthly_totals_arr)
 
-        base_rates = {}
-        for thresh in THRESHOLDS:
-            frac = float(np.mean(monthly_totals_arr > thresh))
-            base_rates[str(thresh)] = round(frac, 4)
+        # ENSO-conditional base rates
+        enso_base_rates = {}
+        for phase in ENSO_PHASES:
+            phase_totals = []
+            for (y, m) in enso_year_months[phase]:
+                days_data = monthly_data[(y, m)]
+                total = sum(days_data.get(d, 0.0) for d in range(1, dim + 1))
+                phase_totals.append(total)
+            if phase_totals:
+                enso_base_rates[phase] = compute_base_rates(np.array(phase_totals))
+            else:
+                enso_base_rates[phase] = {}
 
         month_percentiles = {}
         if len(monthly_totals_arr) > 0:
@@ -172,6 +230,7 @@ def compute_distributions(monthly_data: dict) -> dict:
         # For each possible "current day" (0 = start of month, 1 = after day 1, etc.)
         days_result = {}
         for current_day in range(0, dim):
+            # Compute remaining-period values for all years
             remaining_values = []
             for (y, m) in year_months:
                 days_data = monthly_data[(y, m)]
@@ -185,29 +244,33 @@ def compute_distributions(monthly_data: dict) -> dict:
                 for p in [5, 10, 25, 50, 75, 90, 95]:
                     percentiles[str(p)] = round(float(np.percentile(remaining_arr, p)), 3)
 
-            # Fit gamma distribution (zero-inflated)
-            gamma_params = None
-            positive_vals = remaining_arr[remaining_arr > 0]
-            zero_fraction = float(np.mean(remaining_arr == 0))
+            # Unconditional gamma fit
+            gamma_params = fit_gamma(remaining_arr)
 
-            if len(positive_vals) >= 5:
-                try:
-                    shape, loc, scale = stats.gamma.fit(positive_vals, floc=0)
-                    if math.isfinite(shape) and math.isfinite(scale) and shape > 0 and scale > 0:
-                        gamma_params = {
-                            "shape": round(float(shape), 4),
-                            "scale": round(float(scale), 4),
-                            "zero_fraction": round(zero_fraction, 4),
-                        }
-                except Exception:
-                    pass
+            # ENSO-conditional gamma fits
+            enso_gamma = {}
+            for phase in ENSO_PHASES:
+                phase_remaining = []
+                for (y, m) in enso_year_months[phase]:
+                    days_data = monthly_data[(y, m)]
+                    remaining = sum(days_data.get(d, 0.0) for d in range(current_day + 1, dim + 1))
+                    phase_remaining.append(remaining)
+                if phase_remaining:
+                    enso_gamma[phase] = fit_gamma(np.array(phase_remaining))
+                else:
+                    enso_gamma[phase] = None
 
-            days_result[str(current_day)] = {
+            day_entry = {
                 "percentiles": percentiles,
                 "gamma": gamma_params,
+                "gamma_nino": enso_gamma.get("nino"),
+                "gamma_nina": enso_gamma.get("nina"),
+                "gamma_neutral": enso_gamma.get("neutral"),
                 "n_years": len(remaining_values),
                 "mean": round(float(np.mean(remaining_arr)), 3),
             }
+
+            days_result[str(current_day)] = day_entry
 
         # Cumulative percentiles for the chart (day 1..dim)
         cumulative_percentiles = {}
@@ -231,6 +294,9 @@ def compute_distributions(monthly_data: dict) -> dict:
             "days_in_month": DAYS_IN_MONTH[month],
             "days": days_result,
             "base_rates": base_rates,
+            "base_rates_nino": enso_base_rates.get("nino", {}),
+            "base_rates_nina": enso_base_rates.get("nina", {}),
+            "base_rates_neutral": enso_base_rates.get("neutral", {}),
             "monthly_totals_percentiles": month_percentiles,
             "cumulative_percentiles": cumulative_percentiles,
         }
@@ -239,10 +305,17 @@ def compute_distributions(monthly_data: dict) -> dict:
 
 
 def main():
+    enso_years = load_enso_years()
+    print(f"Loaded ENSO classifications for {len(enso_years)} years")
+    for phase in ENSO_PHASES:
+        years = [y for y, p in enso_years.items() if p == phase]
+        print(f"  {phase}: {len(years)} years ({', '.join(str(y) for y in sorted(years))})")
+
     output = {
         "stations": {},
         "generated_at": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
         "source": "IEM CLI JSON Archive (mesonet.agron.iastate.edu/json/cli.py)",
+        "enso_conditioned": True,
     }
 
     for station_code, info in STATIONS.items():
@@ -256,7 +329,7 @@ def main():
         monthly_data = organize_by_month_year(records)
         print(f"  Organized into {len(monthly_data)} station-months")
 
-        distributions = compute_distributions(monthly_data)
+        distributions = compute_distributions(monthly_data, enso_years)
         print(f"  Computed distributions for {len(distributions)} months")
 
         output["stations"][station_code] = {

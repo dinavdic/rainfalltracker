@@ -6,6 +6,7 @@ import {
   RainfallApiResponse,
   KalshiApiResponse,
   StationProbabilities,
+  EnsoPhase,
 } from "@/lib/types";
 import { computeProbabilities } from "@/lib/probability";
 import { STATIONS, THRESHOLDS } from "@/lib/stations";
@@ -21,6 +22,15 @@ const MONTH_NAMES = [
 function daysInMonth(month: number, year: number): number {
   return new Date(year, month, 0).getDate();
 }
+
+// Current ENSO phase — as of April 2026, neutral (transitioning from La Niña).
+// Update this when ENSO state changes, or fetch dynamically in the future.
+const CURRENT_ENSO_PHASE: EnsoPhase = "neutral";
+const ENSO_LABEL: Record<EnsoPhase, string> = {
+  nino: "El Niño",
+  nina: "La Niña",
+  neutral: "Neutral",
+};
 
 export default function Dashboard() {
   const [historical, setHistorical] = useState<HistoricalData | null>(null);
@@ -112,7 +122,8 @@ export default function Dashboard() {
         mtd ?? 0,
         ensemble,
         qpfSum,
-        historical
+        historical,
+        CURRENT_ENSO_PHASE
       );
     }
   }
@@ -134,6 +145,13 @@ export default function Dashboard() {
           <p className="text-sm text-gray-500 mt-1">
             {daysRemaining} day{daysRemaining !== 1 ? "s" : ""} remaining
             {lastUpdated && <> &middot; Last updated: {lastUpdated}</>}
+            {" "}&middot;{" "}
+            <span className="inline-flex items-center gap-1">
+              <span className="text-gray-400">ENSO:</span>
+              <span className="inline-block px-1.5 py-0.5 rounded text-xs font-semibold bg-gray-100 text-gray-700">
+                {ENSO_LABEL[CURRENT_ENSO_PHASE]}
+              </span>
+            </span>
           </p>
           {liveDataFailed && (
             <p className="text-xs text-amber-600 mt-1">
@@ -198,10 +216,13 @@ export default function Dashboard() {
             1991–2024 historical CLI distributions.
           </p>
           <p className="mt-1">
-            Clim. = P(exceed | MTD, days remaining) using gamma CDF.
-            Ensemble = average P(exceed) across 31 GEFS members with
-            climatology tail. Market = Kalshi mid-price. Edge =
-            Ensemble &minus; Market.
+            Clim. = P(exceed | MTD, days remaining, ENSO phase) using
+            gamma CDF. Base/Clim. rates are ENSO-conditioned
+            ({ENSO_LABEL[CURRENT_ENSO_PHASE]} years only, falling back to
+            all years when subset too small).
+            Ensemble = average P(exceed) across GEFS+ECMWF members with
+            ENSO-conditioned climatology tail. Market = Kalshi mid-price.
+            Edge = Ensemble &minus; Market.
           </p>
         </footer>
       </div>

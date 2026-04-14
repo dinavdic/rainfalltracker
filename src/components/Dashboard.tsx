@@ -21,6 +21,7 @@ import {
 import { computeAllMomentum } from "@/lib/momentum";
 import StationCard from "./StationCard";
 import CumulativeChart from "./CumulativeChart";
+import TopMovers from "./TopMovers";
 
 const MONTH_NAMES = [
   "",
@@ -311,6 +312,9 @@ export default function Dashboard() {
           )}
         </header>
 
+        {/* Biggest movers across last two snapshots */}
+        <TopMovers snapshots={mergedSnapshots} />
+
         {/* Station cards grid */}
         <div className="grid grid-cols-1 md:grid-cols-2 gap-4 mb-8">
           {STATIONS.map((station) => {
@@ -318,8 +322,12 @@ export default function Dashboard() {
             const rainData = rainfall?.stations[station.code];
 
             return (
-              <StationCard
+              <div
                 key={station.code}
+                id={`station-${station.code}`}
+                className="scroll-mt-4 rounded-lg transition-shadow"
+              >
+              <StationCard
                 code={station.code}
                 city={station.city}
                 mtd={mtdValues[station.code]}
@@ -346,6 +354,7 @@ export default function Dashboard() {
                 lastDate={rainData?.lastUpdated ?? null}
                 error={rainData?.error}
               />
+              </div>
             );
           })}
         </div>

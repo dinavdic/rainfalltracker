@@ -453,36 +453,27 @@ export default function StationCard({
                           posSide === "YES"
                             ? "text-green-700"
                             : "text-red-700";
-                        // Live mark-to-market from the side actually held.
-                        // YES positions mark at yesMid = (yesBid+yesAsk)/2;
-                        // NO positions mark at noMid = (noBid+noAsk)/2
-                        // computed from the No side directly rather than
-                        // deriving from yesMid. marketValue is what's shown
-                        // on line 1 and is also the numerator of the Total
-                        // Return percent on line 2 (denominator is Kalshi's
-                        // total_traded_dollars).
+                        // Mark at the ask for the held side — this is how
+                        // Kalshi itself computes "Market value" on the
+                        // positions page. YES positions mark at yesAsk;
+                        // NO positions mark at noAsk. marketValue feeds
+                        // both line 1 and the Total Return percent on
+                        // line 2 (denominator is total_traded_dollars).
                         let marketValue: number | null = null;
                         let pctGain: number | null = null;
-                        let midCents: number | null = null;
+                        let markCents: number | null = null;
                         if (kalshiPrice) {
-                          if (
-                            posSide === "YES" &&
-                            kalshiPrice.yesBid !== null &&
-                            kalshiPrice.yesAsk !== null
-                          ) {
-                            midCents =
-                              (kalshiPrice.yesBid + kalshiPrice.yesAsk) / 2;
+                          if (posSide === "YES" && kalshiPrice.yesAsk !== null) {
+                            markCents = kalshiPrice.yesAsk;
                           } else if (
                             posSide === "NO" &&
-                            kalshiPrice.noBid !== null &&
                             kalshiPrice.noAsk !== null
                           ) {
-                            midCents =
-                              (kalshiPrice.noBid + kalshiPrice.noAsk) / 2;
+                            markCents = kalshiPrice.noAsk;
                           }
                         }
-                        if (midCents !== null) {
-                          marketValue = (posQty * midCents) / 100;
+                        if (markCents !== null) {
+                          marketValue = (posQty * markCents) / 100;
                           const totalTradedDollars =
                             positionData.totalTradedDollars;
                           if (totalTradedDollars > 0) {

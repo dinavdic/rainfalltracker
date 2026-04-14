@@ -211,7 +211,7 @@ export default function StationCard({
 
   // Column count for chart row colSpan
   const colCount =
-    4 + (hasForecast ? 1 : 0) + (hasKalshi ? 4 : 0) + (hasKalshi && hasForecast ? 1 : 0);
+    4 + (hasForecast ? 1 : 0) + (hasKalshi ? 3 : 0) + (hasKalshi && hasForecast ? 1 : 0);
 
   // Total volume across all thresholds for this station
   const totalVolume = hasKalshi
@@ -265,25 +265,25 @@ export default function StationCard({
       )}
 
       {/* Thresholds table */}
-      <table className="w-full text-sm mb-3">
+      <div className="overflow-x-auto mb-3">
+      <table className="w-full text-sm">
         <thead>
           <tr className="text-gray-500 text-xs">
-            <th className="text-left pb-1 font-medium">Threshold</th>
-            <th className="text-right pb-1 font-medium">Need</th>
-            <th className="text-right pb-1 font-medium">Base</th>
-            <th className="text-right pb-1 font-medium">Clim.</th>
+            <th className="text-left px-1 py-1 font-medium">Threshold</th>
+            <th className="text-right px-1 py-1 font-medium">Need</th>
+            <th className="text-right px-1 py-1 font-medium">Base</th>
+            <th className="text-right px-1 py-1 font-medium">Clim.</th>
             {hasForecast && (
-              <th className="text-right pb-1 font-medium">Ensemble</th>
+              <th className="text-right px-1 py-1 font-medium">Ensemble</th>
             )}
             {hasKalshi && (
               <>
-                <th className="text-right pb-1 font-medium text-[11px] min-w-[50px]">Yes</th>
-                <th className="text-right pb-1 font-medium text-[11px] min-w-[50px]">No</th>
+                <th className="text-right px-1 py-1 font-medium text-[10px]">Yes</th>
+                <th className="text-right px-1 py-1 font-medium text-[10px]">No</th>
                 {hasForecast && (
-                  <th className="text-right pb-1 font-medium min-w-[50px]">Edge</th>
+                  <th className="text-right px-1 py-1 font-medium">Edge</th>
                 )}
-                <th className="text-right pb-1 font-medium min-w-[70px]">Position</th>
-                <th className="text-right pb-1 font-medium min-w-[70px]">Cost/P&amp;L</th>
+                <th className="text-right px-1 py-1 font-medium text-[10px]">Position</th>
               </>
             )}
           </tr>
@@ -344,10 +344,10 @@ export default function StationCard({
             return (
               <Fragment key={t.threshold}>
               <tr className={`border-t border-gray-50 ${rowHighlight}`}>
-                <td className="py-1.5 text-gray-700 font-medium">
+                <td className="px-1 py-1 text-gray-700 font-medium">
                   &gt;{t.threshold}&quot;
                 </td>
-                <td className="py-1.5 text-right text-gray-600">
+                <td className="px-1 py-1 text-right text-gray-600">
                   {t.remainingNeeded === null ? (
                     <span className="text-green-600 text-xs font-semibold">
                       exceeded
@@ -358,7 +358,7 @@ export default function StationCard({
                     </span>
                   )}
                 </td>
-                <td className="py-1.5 text-right text-gray-400 tabular-nums">
+                <td className="px-1 py-1 text-right text-gray-400 tabular-nums">
                   {(() => {
                     const pct = t.baseRate * 100;
                     return pct > 0 && pct < 10
@@ -366,12 +366,12 @@ export default function StationCard({
                       : String(Math.round(pct));
                   })()}%
                 </td>
-                <td className="py-1.5 text-right">
+                <td className="px-1 py-1 text-right">
                   <ProbabilityBadge value={t.climatologyProbability} />
                 </td>
                 {hasForecast && (
                   <td
-                    className="py-1.5 text-right cursor-pointer"
+                    className="px-1 py-1 text-right cursor-pointer"
                     onClick={() => setOpenChart(isChartOpen ? null : thresholdKey)}
                     title="Click to view probability trend"
                   >
@@ -397,11 +397,11 @@ export default function StationCard({
                 )}
                 {hasKalshi && (
                   <>
-                    <td className="py-1.5 text-right text-[11px]">
+                    <td className="px-1 py-1 text-right text-[10px]">
                       {kalshiPrice?.yesAsk !== null && kalshiPrice?.yesAsk !== undefined ? (
                         <>
                           <span
-                            className="inline-block px-1.5 py-0.5 rounded text-[11px] font-semibold tabular-nums bg-green-50 text-green-800"
+                            className="inline-block px-1 py-0.5 rounded text-[10px] font-semibold tabular-nums bg-green-50 text-green-800"
                             title={
                               change24h !== null
                                 ? `24h: ${change24h > 0 ? "+" : ""}${Math.round(change24h)}c`
@@ -425,9 +425,9 @@ export default function StationCard({
                         <span className="text-gray-300">&mdash;</span>
                       )}
                     </td>
-                    <td className="py-1.5 text-right text-[11px]">
+                    <td className="px-1 py-1 text-right text-[10px]">
                       {kalshiPrice?.yesBid !== null && kalshiPrice?.yesBid !== undefined ? (
-                        <span className="inline-block px-1.5 py-0.5 rounded text-[11px] font-semibold tabular-nums bg-red-50 text-red-800">
+                        <span className="inline-block px-1 py-0.5 rounded text-[10px] font-semibold tabular-nums bg-red-50 text-red-800">
                           {Math.round(100 - kalshiPrice.yesBid)}&cent;
                         </span>
                       ) : (
@@ -435,7 +435,7 @@ export default function StationCard({
                       )}
                     </td>
                     {hasForecast && (
-                      <td className="py-1.5 text-right">
+                      <td className="px-1 py-1 text-right">
                         {edge !== null ? (
                           <>
                             <EdgeBadge edge={edge} />
@@ -452,28 +452,16 @@ export default function StationCard({
                         )}
                       </td>
                     )}
-                    <td className="py-1.5 text-right">
+                    <td className="px-1 py-1 text-right text-[10px]">
                       {positionData ? (() => {
                         const posSide = positionData.position >= 0 ? "YES" : "NO";
+                        const posQty = Math.abs(positionData.position);
+                        const avg = positionData.avgPrice;
                         const marketValue = positionData.marketExposure / 100;
                         const posColor =
                           posSide === "YES"
                             ? "text-green-700"
                             : "text-red-700";
-                        return (
-                          <span
-                            className={`text-[11px] font-semibold tabular-nums ${posColor}`}
-                          >
-                            ${Math.round(marketValue)}
-                          </span>
-                        );
-                      })() : null}
-                    </td>
-                    <td className="py-1.5 text-right">
-                      {positionData ? (() => {
-                        const posSide = positionData.position >= 0 ? "YES" : "NO";
-                        const posQty = Math.abs(positionData.position);
-                        const avg = positionData.avgPrice;
                         // Mark-to-market from live orderbook mid. YES marks
                         // at yesMid; NO marks at (100 - yesMid).
                         let pnlDollars: number | null = null;
@@ -501,14 +489,14 @@ export default function StationCard({
                             : "text-red-700";
                         return (
                           <>
-                            <div className="text-[11px] text-gray-600 tabular-nums">
-                              {avg !== null ? `${avg.toFixed(1)}\u00A2` : "—"}
+                            <div className={`font-semibold tabular-nums ${posColor}`}>
+                              ${Math.round(marketValue)}
                             </div>
-                            <div className={`text-[10px] font-semibold tabular-nums ${pnlColor}`}>
+                            <div className={`font-semibold tabular-nums ${pnlColor}`}>
                               {pnlDollars !== null ? (
                                 <>
                                   {pnlDollars >= 0 ? "+" : "\u2212"}$
-                                  {Math.abs(pnlDollars).toFixed(2)}
+                                  {Math.round(Math.abs(pnlDollars))}
                                   {pctGain !== null && (
                                     <>
                                       {" "}({pctGain >= 0 ? "+" : ""}
@@ -545,6 +533,7 @@ export default function StationCard({
           })}
         </tbody>
       </table>
+      </div>
 
       {/* Model convergence row */}
       <div className="text-[11px] mb-2 flex items-center gap-1.5 flex-wrap">

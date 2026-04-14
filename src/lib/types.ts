@@ -152,10 +152,10 @@ export interface KalshiPosition {
   // Current marked value of the position, in cents (from Kalshi's
   // market_exposure_dollars).
   marketExposure: number;
-  // Lifetime cost basis of contracts traded into this position, in cents
-  // (from Kalshi's total_traded_dollars). Used with marketExposure to
-  // derive unrealized P&L.
-  totalTraded: number;
+  // Lifetime cost basis of contracts traded into this position, parsed
+  // directly from Kalshi's total_traded_dollars string (in dollars).
+  // Used as the denominator for Kalshi-style Total Return %.
+  totalTradedDollars: number;
   // Realized P&L on this ticker so far, in cents (may be 0).
   realizedPnl: number;
   // Cumulative fees paid on this ticker, in cents.

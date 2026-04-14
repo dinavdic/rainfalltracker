@@ -112,8 +112,9 @@ async function fetchPortfolioPositions(): Promise<
       // Only surface rainfall markets on the dashboard.
       if (!raw.ticker.startsWith("KXRAIN")) continue;
 
-      // Dollar strings → cents.
-      const totalTradedCents = dollarsToCents(raw.total_traded_dollars);
+      // Raw parsed dollar values.
+      const totalTradedDollars = parseNum(raw.total_traded_dollars);
+      const totalTradedCents = Math.round(totalTradedDollars * 100);
       const marketExposure = dollarsToCents(raw.market_exposure_dollars);
       const realizedPnl = dollarsToCents(raw.realized_pnl_dollars);
       const feesPaid = dollarsToCents(raw.fees_paid_dollars);
@@ -132,7 +133,7 @@ async function fetchPortfolioPositions(): Promise<
         ticker: raw.ticker,
         position: positionSigned,
         marketExposure,
-        totalTraded: totalTradedCents,
+        totalTradedDollars,
         realizedPnl,
         feesPaid,
         avgPrice,

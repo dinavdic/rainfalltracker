@@ -453,10 +453,11 @@ export default function StationCard({
                           posSide === "YES"
                             ? "text-green-700"
                             : "text-red-700";
-                        // Mark-to-market from live orderbook mid. YES marks
-                        // at yesMid; NO marks at (100 - yesMid). Compare
-                        // to lifetime cost basis (total_traded_dollars) so
-                        // the percent matches Kalshi's own Total Return.
+                        // Live mark-to-market. YES marks at yesMid; NO
+                        // marks at (100 - yesMid). marketValue is what's
+                        // shown on line 1 and is also the numerator of the
+                        // Total Return percent on line 2 (denominator is
+                        // Kalshi's total_traded_dollars).
                         let marketValue: number | null = null;
                         let pctGain: number | null = null;
                         if (
@@ -470,7 +471,7 @@ export default function StationCard({
                             posSide === "YES" ? yesMid : 100 - yesMid;
                           marketValue = (posQty * midCents) / 100;
                           const totalTradedDollars =
-                            positionData.totalTraded / 100;
+                            positionData.totalTradedDollars;
                           if (totalTradedDollars > 0) {
                             pctGain =
                               ((marketValue - totalTradedDollars) /

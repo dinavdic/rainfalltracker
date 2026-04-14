@@ -18,7 +18,11 @@ export const dynamic = "force-dynamic";
 // registered on Kalshi; if the env vars aren't set (local dev) we fall
 // back to the public unauthenticated endpoint.
 const KALSHI_API_KEY_ID = process.env.KALSHI_API_KEY_ID;
-const KALSHI_PRIVATE_KEY = process.env.KALSHI_PRIVATE_KEY;
+// Normalize PEM: Vercel-style env vars often store newlines as literal
+// "\n" escape sequences, which breaks crypto.createPrivateKey().
+const KALSHI_PRIVATE_KEY = process.env.KALSHI_PRIVATE_KEY
+  ? process.env.KALSHI_PRIVATE_KEY.replace(/\\n/g, "\n")
+  : undefined;
 const HAS_AUTH = !!(KALSHI_API_KEY_ID && KALSHI_PRIVATE_KEY);
 
 const KALSHI_API_BASE = HAS_AUTH
@@ -33,24 +37,32 @@ const KALSHI_API_PATH_PREFIX = "/trade-api/v2";
 /**
  * Compute Kalshi RSA-PSS auth headers for a given method + path. Returns
  * null in unauthenticated mode so callers can skip adding the headers.
+ * Appends debug lines to `log` (sign input + signature preview) to help
+ * diagnose 401s.
  */
 function signKalshiRequest(
   method: string,
   path: string,
-): { timestamp: string; signature: string; keyId: string } | null {
+  log: string[],
+): { timestamp: string; signature: string; keyId: string; signInput: string } | null {
   if (!HAS_AUTH) return null;
   const timestamp = Date.now().toString();
-  const message = timestamp + method + KALSHI_API_PATH_PREFIX + path;
+  const upperMethod = method.toUpperCase();
+  const signInput = timestamp + upperMethod + KALSHI_API_PATH_PREFIX + path;
+  log.push(`[kalshi] Sign input: '${signInput}'`);
   const privateKey = crypto.createPrivateKey(KALSHI_PRIVATE_KEY as string);
-  const signature = crypto.sign("RSA-SHA256", Buffer.from(message), {
+  const signature = crypto.sign("RSA-SHA256", Buffer.from(signInput), {
     key: privateKey,
     padding: crypto.constants.RSA_PKCS1_PSS_PADDING,
     saltLength: crypto.constants.RSA_PSS_SALTLEN_DIGEST,
   });
+  const signatureB64 = signature.toString("base64");
+  log.push(`[kalshi] Signature generated: ${signatureB64.substring(0, 20)}...`);
   return {
     timestamp,
-    signature: signature.toString("base64"),
+    signature: signatureB64,
     keyId: KALSHI_API_KEY_ID as string,
+    signInput,
   };
 }
 
@@ -138,11 +150,14 @@ async function kalshiFetch(
     Accept: "application/json",
     ...(extraHeaders || {}),
   };
-  const auth = signKalshiRequest("GET", path);
+  const auth = signKalshiRequest("GET", path, log);
   if (auth) {
     headers["KALSHI-ACCESS-KEY"] = auth.keyId;
     headers["KALSHI-ACCESS-TIMESTAMP"] = auth.timestamp;
     headers["KALSHI-ACCESS-SIGNATURE"] = auth.signature;
+    log.push(
+      `[kalshi] Headers: KEY=${headers["KALSHI-ACCESS-KEY"]} TS=${headers["KALSHI-ACCESS-TIMESTAMP"]}`
+    );
   }
 
   try {
@@ -642,6 +657,11 @@ export async function GET() {
   log.push(
     `[kalshi] Auth mode: ${HAS_AUTH ? "authenticated (trading-api)" : "unauthenticated (elections)"}`
   );
+  if (HAS_AUTH) {
+    log.push(
+      `[kalshi] Auth enabled: keyId=${(KALSHI_API_KEY_ID as string).substring(0, 8)}... keyLength=${(KALSHI_PRIVATE_KEY as string).length}`
+    );
+  }
   log.push(
     `[kalshi] Starting Kalshi market discovery at ${new Date().toISOString()}`
   );

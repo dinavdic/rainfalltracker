@@ -60,8 +60,8 @@ CACHE_PATH = os.path.join(
 
 # ---------- Data fetching ----------
 
-def fetch_iem_year(icao: str, year: int) -> list[dict]:
-    """Fetch one year of CLI data from the IEM JSON endpoint."""
+def fetch_iem_year_raw(icao: str, year: int) -> list[dict]:
+    """Fetch one year of CLI data, returning raw IEM result entries (unfiltered)."""
     url = f"{IEM_BASE}?station={icao}&year={year}"
     for attempt in range(5):
         try:
@@ -84,8 +84,17 @@ def fetch_iem_year(icao: str, year: int) -> list[dict]:
         print(f"    FAILED {icao} {year} after 5 attempts", file=sys.stderr)
         return []
 
+    return data.get("results", [])
+
+
+def parse_raw_entries(raw: list[dict]) -> list[dict]:
+    """
+    Convert raw IEM entries into daily records with numeric precip.
+    Mirrors the filter applied during the main analysis: 'M' (missing)
+    and any non-numeric precip value (including 'T' trace) is dropped.
+    """
     records = []
-    for entry in data.get("results", []):
+    for entry in raw:
         date_str = entry.get("valid", "")
         precip_val = entry.get("precip")
         if not date_str or precip_val is None or precip_val == "M":
@@ -114,21 +123,21 @@ def save_cache(cache: dict) -> None:
         json.dump(cache, f)
 
 
-def fetch_station_daily(code: str, icao: str, cache: dict) -> list[dict]:
-    """Fetch all years of daily data for a station, using cache when possible."""
-    cache_key = f"{code}_{START_YEAR}_{END_YEAR}"
+def fetch_station_raw(code: str, icao: str, cache: dict) -> list[dict]:
+    """Fetch all years of raw IEM entries for a station, using cache when possible."""
+    cache_key = f"{code}_raw_{START_YEAR}_{END_YEAR}"
     if cache_key in cache:
         return cache[cache_key]
 
-    all_records = []
+    all_raw = []
     for year in range(START_YEAR, END_YEAR + 1):
-        records = fetch_iem_year(icao, year)
-        all_records.extend(records)
+        raw = fetch_iem_year_raw(icao, year)
+        all_raw.extend(raw)
         time.sleep(0.2)  # be polite to IEM
 
-    cache[cache_key] = all_records
+    cache[cache_key] = all_raw
     save_cache(cache)
-    return all_records
+    return all_raw
 
 
 # ---------- Monthly aggregation ----------
@@ -172,6 +181,185 @@ def build_year_series(
             march.append(m[3])
             april.append(m[4])
     return years, janmar, march, april
+
+
+# ---------- Diagnostics ----------
+
+MIN_DAYS = {1: 25, 2: 24, 3: 25, 4: 25}
+
+
+def categorize_entries(raw: list[dict]) -> dict[tuple[int, int], dict[str, int]]:
+    """
+    Bucket raw IEM entries by (year, month) and count category totals.
+    Categories:
+      - valid: numeric precip (gets included in the monthly total)
+      - trace: precip == 'T' (dropped by current filter)
+      - missing: precip is None or 'M'
+      - parse_error: non-numeric, non-'T', non-'M'
+      - total: all entries for that month
+    """
+    buckets: dict[tuple[int, int], dict[str, int]] = defaultdict(
+        lambda: {"valid": 0, "trace": 0, "missing": 0, "parse_error": 0, "total": 0}
+    )
+    for entry in raw:
+        date_str = entry.get("valid", "")
+        if not date_str or len(date_str) < 7:
+            continue
+        try:
+            y = int(date_str[:4])
+            m = int(date_str[5:7])
+        except (ValueError, IndexError):
+            continue
+        if m < 1 or m > 4:
+            continue
+
+        key = (y, m)
+        buckets[key]["total"] += 1
+
+        precip_val = entry.get("precip")
+        if precip_val is None or precip_val == "M":
+            buckets[key]["missing"] += 1
+        elif precip_val == "T":
+            buckets[key]["trace"] += 1
+        else:
+            try:
+                float(precip_val)
+                buckets[key]["valid"] += 1
+            except (ValueError, TypeError):
+                buckets[key]["parse_error"] += 1
+    return dict(buckets)
+
+
+MONTH_NAME = {1: "Jan", 2: "Feb", 3: "Mar", 4: "Apr"}
+
+
+def diagnose_station(code: str, info: dict, raw: list[dict]) -> None:
+    """Print a detailed diagnostic for one station."""
+    print()
+    print("=" * 78)
+    print(f"[{code}] {info['city']} ({info['icao']})")
+    print("=" * 78)
+
+    # Inventory of years returned by IEM
+    years_with_entries: set[int] = set()
+    total_entries = 0
+    for entry in raw:
+        total_entries += 1
+        ds = entry.get("valid", "")
+        if ds and len(ds) >= 4:
+            try:
+                years_with_entries.add(int(ds[:4]))
+            except ValueError:
+                pass
+
+    expected_years = set(range(START_YEAR, END_YEAR + 1))
+    missing_years = sorted(expected_years - years_with_entries)
+    present_years = sorted(years_with_entries & expected_years)
+
+    print(f"  Total raw entries from IEM: {total_entries}")
+    print(
+        f"  Years with any entries: {len(present_years)} / "
+        f"{len(expected_years)} expected ({START_YEAR}-{END_YEAR})"
+    )
+    if missing_years:
+        print(f"  Years with NO entries returned: {missing_years}")
+    else:
+        print(f"  Every year in {START_YEAR}-{END_YEAR} returned at least some data")
+
+    # Per-(year, month) category counts
+    buckets = categorize_entries(raw)
+
+    complete_years: list[int] = []
+    incomplete_years: list[tuple[int, list[tuple[int, dict[str, int]]]]] = []
+    for year in sorted(expected_years):
+        months_fail: list[tuple[int, dict[str, int]]] = []
+        for m in (1, 2, 3, 4):
+            b = buckets.get((year, m), {
+                "valid": 0, "trace": 0, "missing": 0,
+                "parse_error": 0, "total": 0,
+            })
+            if b["valid"] < MIN_DAYS[m]:
+                months_fail.append((m, b))
+        if not months_fail:
+            complete_years.append(year)
+        else:
+            incomplete_years.append((year, months_fail))
+
+    print(
+        f"  Years with all Jan-Apr meeting the {MIN_DAYS} valid-day thresholds: "
+        f"{len(complete_years)}"
+    )
+    print(f"  Years dropped due to incomplete months: {len(incomplete_years)}")
+
+    if incomplete_years:
+        print()
+        print(
+            f"  Dropped-year detail  "
+            f"(valid = numeric precip; trace = 'T'; miss = 'M'/null; "
+            f"perr = unparseable)"
+        )
+        print(
+            f"    {'year':>4} {'mo':>3} {'need':>4} "
+            f"{'valid':>5} {'trace':>5} {'miss':>4} {'perr':>4} {'total':>5}  "
+            f"reason"
+        )
+        for year, months_fail in incomplete_years:
+            for m, b in months_fail:
+                need = MIN_DAYS[m]
+                trace_note = ""
+                if b["valid"] + b["trace"] >= need and b["valid"] < need:
+                    trace_note = (
+                        f"would pass if trace counted "
+                        f"(valid+trace={b['valid'] + b['trace']})"
+                    )
+                elif b["total"] == 0:
+                    trace_note = "no entries at all for this month"
+                elif b["missing"] > 0 and b["valid"] + b["trace"] < need:
+                    trace_note = f"{b['missing']} days reported as 'M'/missing"
+                else:
+                    trace_note = "short month in IEM response"
+                print(
+                    f"    {year:>4} {MONTH_NAME[m]:>3} {need:>4} "
+                    f"{b['valid']:>5} {b['trace']:>5} {b['missing']:>4} "
+                    f"{b['parse_error']:>4} {b['total']:>5}  {trace_note}"
+                )
+
+    # Aggregate summary: how many dropped-months would pass if trace counted?
+    would_pass_with_trace = 0
+    no_data_months = 0
+    for _year, months_fail in incomplete_years:
+        for m, b in months_fail:
+            need = MIN_DAYS[m]
+            if b["valid"] + b["trace"] >= need and b["valid"] < need:
+                would_pass_with_trace += 1
+            if b["total"] == 0:
+                no_data_months += 1
+
+    total_failed_months = sum(len(mf) for _, mf in incomplete_years)
+    print()
+    print(f"  Failed-month breakdown (out of {total_failed_months} total):")
+    print(f"    - Would pass if 'T'(race) counted as a valid day: {would_pass_with_trace}")
+    print(f"    - Had zero entries returned from IEM:             {no_data_months}")
+    print(
+        f"    - Other (genuine missing/null days beyond trace):  "
+        f"{total_failed_months - would_pass_with_trace - no_data_months}"
+    )
+
+
+def run_diagnostics(codes: list[str]) -> None:
+    """Fetch and diagnose the specified station codes."""
+    cache = load_cache()
+    print(f"Diagnostic mode — stations: {', '.join(codes)}")
+    print(f"Years: {START_YEAR}-{END_YEAR}")
+    print(f"Cache: {CACHE_PATH}")
+    for code in codes:
+        info = STATIONS.get(code)
+        if info is None:
+            print(f"Unknown station code: {code}", file=sys.stderr)
+            continue
+        print(f"\n[{code}] fetching / loading cache...")
+        raw = fetch_station_raw(code, info["icao"], cache)
+        diagnose_station(code, info, raw)
 
 
 # ---------- Statistics ----------
@@ -304,6 +492,11 @@ def print_summary(results: list[dict]) -> None:
 
 
 def main() -> None:
+    if "--diagnose" in sys.argv:
+        # Only the stations that previously showed 'insufficient data'
+        run_diagnostics(["DEN", "MDW", "AUS", "HOU"])
+        return
+
     print(f"Serial correlation test: does Jan-Mar predict April rainfall?")
     print(f"Stations: {', '.join(STATIONS.keys())}")
     print(f"Years: {START_YEAR}-{END_YEAR}")
@@ -315,7 +508,8 @@ def main() -> None:
 
     for code, info in STATIONS.items():
         print(f"[{code}] {info['city']} (fetching / loading cache)...")
-        records = fetch_station_daily(code, info["icao"], cache)
+        raw = fetch_station_raw(code, info["icao"], cache)
+        records = parse_raw_entries(raw)
         monthly = compute_monthly_totals(records)
         _, janmar, march, april = build_year_series(monthly)
         result = analyze_station(code, janmar, march, april)

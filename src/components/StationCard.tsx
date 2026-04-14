@@ -1,7 +1,12 @@
 "use client";
 
 import { useState, useMemo, Fragment } from "react";
-import { ThresholdProbability, EnsembleData, KalshiStationData } from "@/lib/types";
+import {
+  ThresholdProbability,
+  EnsembleData,
+  KalshiStationData,
+  KalshiPosition,
+} from "@/lib/types";
 import { ForecastSnapshot } from "@/lib/convergence";
 import { StationConvergence, KalshiDelta } from "@/lib/convergence";
 import { EnsembleMomentum } from "@/lib/momentum";
@@ -20,6 +25,7 @@ interface StationCardProps {
   momentum: EnsembleMomentum | null;
   kalshiDeltas: KalshiDelta | null;
   kalshi: KalshiStationData | null;
+  positions: Record<string, KalshiPosition>;
   snapshots: ForecastSnapshot[];
   lastDate: string | null;
   error?: string;
@@ -172,6 +178,7 @@ export default function StationCard({
   momentum,
   kalshiDeltas,
   kalshi,
+  positions,
   snapshots,
   lastDate,
   error,
@@ -292,6 +299,12 @@ export default function StationCard({
             const edge =
               hasForecast && marketProb !== null
                 ? t.ensembleProbability * 100 - marketProb * 100
+                : null;
+
+            // Portfolio position for this specific market ticker.
+            const positionData =
+              kalshiPrice && positions[kalshiPrice.ticker]
+                ? positions[kalshiPrice.ticker]
                 : null;
 
             // Model range info
@@ -443,6 +456,82 @@ export default function StationCard({
                   </>
                 )}
               </tr>
+              {positionData && (() => {
+                // Render a slim row showing held contracts, avg entry, and
+                // unrealized + realized P&L in dollars.
+                const side = positionData.position >= 0 ? "YES" : "NO";
+                const qty = Math.abs(positionData.position);
+                const avg = positionData.avgPrice;
+                // Current mark: YES positions mark at YES mid; NO positions
+                // mark at (100 - YES mid).
+                let markCents: number | null = null;
+                if (marketProb !== null) {
+                  const yesMid = marketProb * 100;
+                  markCents = side === "YES" ? yesMid : 100 - yesMid;
+                }
+                const unrealizedCents =
+                  markCents !== null && avg !== null
+                    ? (markCents - avg) * qty
+                    : null;
+                const totalPnlCents =
+                  unrealizedCents !== null
+                    ? unrealizedCents +
+                      positionData.realizedPnl -
+                      positionData.feesPaid
+                    : null;
+                const pnlColor =
+                  totalPnlCents === null
+                    ? "text-gray-500"
+                    : totalPnlCents >= 0
+                    ? "text-green-700"
+                    : "text-red-700";
+                const pnlLabel =
+                  totalPnlCents === null
+                    ? "P&L: —"
+                    : `P&L ${totalPnlCents >= 0 ? "+" : "\u2212"}$${Math.abs(
+                        totalPnlCents / 100,
+                      ).toFixed(2)}`;
+                const sideColor =
+                  side === "YES"
+                    ? "text-green-700 bg-green-50"
+                    : "text-red-700 bg-red-50";
+                return (
+                  <tr className="bg-blue-50/30">
+                    <td className="py-1 pl-2 text-[11px] text-gray-500">
+                      &#x21B3; position
+                    </td>
+                    <td
+                      colSpan={colCount - 1}
+                      className="py-1 pr-2 text-[11px] text-gray-700"
+                    >
+                      <span className="inline-flex items-center gap-1.5 flex-wrap">
+                        <span
+                          className={`px-1.5 py-0.5 rounded text-[10px] font-semibold ${sideColor}`}
+                        >
+                          {side}
+                        </span>
+                        <span className="tabular-nums font-medium">
+                          &times;{qty}
+                        </span>
+                        <span className="text-gray-400">@</span>
+                        <span className="tabular-nums">
+                          {avg !== null ? `${avg.toFixed(1)}\u00A2` : "—"}
+                        </span>
+                        <span className="text-gray-300">&middot;</span>
+                        <span className={`tabular-nums font-semibold ${pnlColor}`}>
+                          {pnlLabel}
+                        </span>
+                        {positionData.realizedPnl !== 0 && (
+                          <span className="text-gray-400 text-[10px]">
+                            (realized {positionData.realizedPnl >= 0 ? "+" : "\u2212"}$
+                            {Math.abs(positionData.realizedPnl / 100).toFixed(2)})
+                          </span>
+                        )}
+                      </span>
+                    </td>
+                  </tr>
+                );
+              })()}
               {isChartOpen && (
                 <tr>
                   <td colSpan={colCount} className="p-0">

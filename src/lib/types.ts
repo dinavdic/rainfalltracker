@@ -143,6 +143,32 @@ export interface KalshiApiResponse {
   discoveryLog: string[]; // ticker discovery debug info
 }
 
+// --- Kalshi portfolio (authenticated, read-only) ---
+
+export interface KalshiPosition {
+  ticker: string;
+  // Signed contract count: positive = YES side, negative = NO side.
+  position: number;
+  // Cost basis for the currently held contracts, in cents. Absolute value.
+  marketExposure: number;
+  // Realized P&L on this ticker so far, in cents (may be 0).
+  realizedPnl: number;
+  // Cumulative fees paid on this ticker, in cents.
+  feesPaid: number;
+  // Avg entry price per contract in cents (0-100), or null if position is 0.
+  // For YES positions this is the avg YES price; for NO positions it is the
+  // avg NO price. Convert NO → YES-equivalent only when comparing to market.
+  avgPrice: number | null;
+}
+
+export interface KalshiPortfolioResponse {
+  authenticated: boolean;
+  // Keyed by market ticker (e.g. "KXRAINSFOM-24APR-B3.0").
+  positions: Record<string, KalshiPosition>;
+  fetchedAt: string;
+  error?: string;
+}
+
 // --- Skill curves (forecast verification) ---
 
 export interface SkillCurveData {

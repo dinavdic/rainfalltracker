@@ -5,6 +5,7 @@ import {
   HistoricalData,
   RainfallApiResponse,
   KalshiApiResponse,
+  KalshiPortfolioResponse,
   StationProbabilities,
   EnsoPhase,
 } from "@/lib/types";
@@ -73,6 +74,7 @@ export default function Dashboard() {
   const [historical, setHistorical] = useState<HistoricalData | null>(null);
   const [rainfall, setRainfall] = useState<RainfallApiResponse | null>(null);
   const [kalshi, setKalshi] = useState<KalshiApiResponse | null>(null);
+  const [portfolio, setPortfolio] = useState<KalshiPortfolioResponse | null>(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const [liveDataFailed, setLiveDataFailed] = useState(false);
@@ -97,10 +99,11 @@ export default function Dashboard() {
         return;
       }
 
-      // Fetch live rainfall and Kalshi data in parallel
-      const [rainResult, kalshiResult] = await Promise.allSettled([
+      // Fetch live rainfall, Kalshi markets, and Kalshi portfolio in parallel
+      const [rainResult, kalshiResult, portfolioResult] = await Promise.allSettled([
         fetch("/api/fetch-rainfall"),
         fetch("/api/fetch-kalshi"),
+        fetch("/api/fetch-portfolio"),
       ]);
 
       if (rainResult.status === "fulfilled" && rainResult.value.ok) {
@@ -113,6 +116,11 @@ export default function Dashboard() {
         setKalshi(await kalshiResult.value.json());
       }
       // Kalshi failure is non-fatal — we just don't show Market/Edge columns
+
+      if (portfolioResult.status === "fulfilled" && portfolioResult.value.ok) {
+        setPortfolio(await portfolioResult.value.json());
+      }
+      // Portfolio failure is non-fatal — positions just won't render
 
       // Fetch server-side snapshots from Blob storage (non-blocking)
       try {
@@ -350,6 +358,7 @@ export default function Dashboard() {
                 momentum={momentumMap[station.code] ?? null}
                 kalshiDeltas={kalshiDeltaMap[station.code] ?? null}
                 kalshi={kalshi?.stations[station.code] ?? null}
+                positions={portfolio?.positions ?? {}}
                 snapshots={mergedSnapshots}
                 lastDate={rainData?.lastUpdated ?? null}
                 error={rainData?.error}

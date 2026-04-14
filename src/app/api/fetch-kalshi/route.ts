@@ -1,5 +1,4 @@
 import { NextResponse } from "next/server";
-import crypto from "crypto";
 import {
   KalshiApiResponse,
   KalshiStationData,
@@ -11,58 +10,15 @@ import {
   KALSHI_SERIES_CANDIDATES,
   KALSHI_CITY_KEYWORDS,
 } from "@/lib/stations";
+import {
+  HAS_AUTH,
+  KALSHI_API_BASE,
+  KALSHI_API_KEY_ID,
+  KALSHI_PRIVATE_KEY,
+  signKalshiRequest,
+} from "@/lib/kalshi-auth";
 
 export const dynamic = "force-dynamic";
-
-// Authenticated access to the real trading API requires an RSA key pair
-// registered on Kalshi; if the env vars aren't set (local dev) we fall
-// back to the public unauthenticated endpoint.
-const KALSHI_API_KEY_ID = process.env.KALSHI_API_KEY_ID;
-// Normalize PEM: Vercel-style env vars often store newlines as literal
-// "\n" escape sequences, which breaks crypto.createPrivateKey().
-const KALSHI_PRIVATE_KEY = process.env.KALSHI_PRIVATE_KEY
-  ? process.env.KALSHI_PRIVATE_KEY.replace(/\\n/g, "\n")
-  : undefined;
-const HAS_AUTH = !!(KALSHI_API_KEY_ID && KALSHI_PRIVATE_KEY);
-
-const KALSHI_API_BASE = "https://api.elections.kalshi.com/trade-api/v2";
-
-// Path prefix that must be included in the signed message, per Kalshi's
-// RSA-PSS auth spec: sign `timestamp + method + path` where path is the
-// full URL path (incl. query string) from the host.
-const KALSHI_API_PATH_PREFIX = "/trade-api/v2";
-
-/**
- * Compute Kalshi RSA-PSS auth headers for a given method + path. Returns
- * null in unauthenticated mode so callers can skip adding the headers.
- * Appends debug lines to `log` (sign input + signature preview) to help
- * diagnose 401s.
- */
-function signKalshiRequest(
-  method: string,
-  path: string,
-  log: string[],
-): { timestamp: string; signature: string; keyId: string; signInput: string } | null {
-  if (!HAS_AUTH) return null;
-  const timestamp = Date.now().toString();
-  const upperMethod = method.toUpperCase();
-  const signInput = timestamp + upperMethod + KALSHI_API_PATH_PREFIX + path;
-  log.push(`[kalshi] Sign input: '${signInput}'`);
-  const privateKey = crypto.createPrivateKey(KALSHI_PRIVATE_KEY as string);
-  const signature = crypto.sign("RSA-SHA256", Buffer.from(signInput), {
-    key: privateKey,
-    padding: crypto.constants.RSA_PKCS1_PSS_PADDING,
-    saltLength: crypto.constants.RSA_PSS_SALTLEN_DIGEST,
-  });
-  const signatureB64 = signature.toString("base64");
-  log.push(`[kalshi] Signature generated: ${signatureB64.substring(0, 20)}...`);
-  return {
-    timestamp,
-    signature: signatureB64,
-    keyId: KALSHI_API_KEY_ID as string,
-    signInput,
-  };
-}
 
 interface KalshiMarket {
   ticker: string;
@@ -148,8 +104,12 @@ async function kalshiFetch(
     Accept: "application/json",
     ...(extraHeaders || {}),
   };
-  const auth = signKalshiRequest("GET", path, log);
+  const auth = signKalshiRequest("GET", path);
   if (auth) {
+    log.push(`[kalshi] Sign input: '${auth.signInput}'`);
+    log.push(
+      `[kalshi] Signature generated: ${auth.signature.substring(0, 20)}...`
+    );
     headers["KALSHI-ACCESS-KEY"] = auth.keyId;
     headers["KALSHI-ACCESS-TIMESTAMP"] = auth.timestamp;
     headers["KALSHI-ACCESS-SIGNATURE"] = auth.signature;

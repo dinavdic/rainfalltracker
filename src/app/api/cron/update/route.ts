@@ -23,7 +23,8 @@ const CURRENT_ENSO_PHASE: EnsoPhase = "neutral";
  * GET /api/cron/update
  *
  * Fetches fresh rainfall + Kalshi data, computes probabilities, builds a
- * ForecastSnapshot, caches it in /tmp, and returns it in the response body.
+ * ForecastSnapshot, persists it to Vercel Blob (with /tmp as a warm cache),
+ * and returns it in the response body.
  *
  * The snapshot is returned so that:
  *   - The Dashboard can merge it into localStorage on next visit
@@ -126,7 +127,7 @@ export async function GET(request: NextRequest) {
     await saveServerSnapshot(snapshot);
 
     const elapsed = Date.now() - startMs;
-    log.push(`[cron] Snapshot built and cached (${elapsed}ms total)`);
+    log.push(`[cron] Snapshot built and persisted to Blob + /tmp (${elapsed}ms total)`);
 
     for (const line of log) {
       console.log(line);

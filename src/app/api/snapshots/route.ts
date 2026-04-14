@@ -6,10 +6,10 @@ export const dynamic = "force-dynamic";
 /**
  * GET /api/snapshots
  *
- * Returns server-side forecast snapshots cached in /tmp.
- * On Vercel, /tmp is ephemeral (cleared on cold starts), so this is a
- * best-effort supplement to the browser's localStorage. The Dashboard
- * merges these with localStorage snapshots for a more complete history.
+ * Returns server-side forecast snapshots. Backed by Vercel Blob for
+ * durability across cold starts, with /tmp as a warm-instance cache.
+ * The Dashboard merges these with localStorage snapshots for the most
+ * complete history.
  */
 export async function GET() {
   try {

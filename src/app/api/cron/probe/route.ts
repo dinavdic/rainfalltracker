@@ -2,6 +2,15 @@ import { NextRequest, NextResponse } from "next/server";
 import { put, get } from "@vercel/blob";
 import { STATIONS } from "@/lib/stations";
 import { fetchNWSCLI, formatShortDate } from "@/lib/nws-cli";
+import { KalshiApiResponse } from "@/lib/types";
+import {
+  ForecastSnapshot,
+  StationSnapshot,
+} from "@/lib/convergence";
+import {
+  loadServerSnapshots,
+  saveServerSnapshot,
+} from "@/lib/snapshot-store";
 
 export const dynamic = "force-dynamic";
 export const maxDuration = 60;
@@ -283,18 +292,103 @@ export async function GET(request: NextRequest) {
     );
   }
 
-  // --- 3. Fire full update if either signal detected new data ---
+  // --- 3. Fire full update if either signal detected new data;
+  //        otherwise save a price-only snapshot so we capture Kalshi
+  //        price observations at the probe cadence. ---
   if (!runChanged && !mtdChanged) {
+    const origin = request.nextUrl.origin;
+    let priceSnapshotSaved = false;
+    let priceSnapshotError: string | undefined;
+
+    try {
+      // Fetch fresh Kalshi prices.
+      const kalshiResp = await fetch(`${origin}/api/fetch-kalshi`, {
+        signal: AbortSignal.timeout(20000),
+      });
+      if (!kalshiResp.ok) {
+        throw new Error(
+          `/api/fetch-kalshi returned ${kalshiResp.status} ${kalshiResp.statusText}`,
+        );
+      }
+      const kalshi = (await kalshiResp.json()) as KalshiApiResponse;
+
+      // Load the most recent full snapshot for ensemble probs to carry forward.
+      const history = await loadServerSnapshots();
+      const latest = history.length > 0 ? history[history.length - 1] : null;
+
+      if (!latest) {
+        const line = `[probe] No prior snapshot to carry forward; skipping price-only snapshot`;
+        console.log(line);
+        log.push(line);
+      } else {
+        const stations: Record<string, StationSnapshot> = {};
+        for (const [code, prevStation] of Object.entries(latest.stations)) {
+          // Carry forward all ensemble fields from the latest snapshot.
+          const next: StationSnapshot = {
+            ...prevStation,
+            thresholds: { ...prevStation.thresholds },
+          };
+
+          // Overwrite kalshiPrices with current mid-prices.
+          const kalshiStation = kalshi.stations?.[code];
+          if (kalshiStation) {
+            const prices: Record<string, number> = {};
+            for (const [thresh, mkt] of Object.entries(
+              kalshiStation.thresholds,
+            )) {
+              let mid: number | null = null;
+              if (mkt.yesBid !== null && mkt.yesAsk !== null) {
+                mid = (mkt.yesBid + mkt.yesAsk) / 2;
+              } else if (mkt.lastPrice !== null) {
+                mid = mkt.lastPrice;
+              }
+              if (mid !== null) {
+                prices[thresh] = Math.round(mid * 100) / 100;
+              }
+            }
+            if (Object.keys(prices).length > 0) {
+              next.kalshiPrices = prices;
+            } else {
+              delete next.kalshiPrices;
+            }
+          }
+
+          stations[code] = next;
+        }
+
+        const snapshot: ForecastSnapshot = {
+          timestamp: nowIso,
+          stations,
+        };
+        await saveServerSnapshot(snapshot);
+        priceSnapshotSaved = true;
+        const line = `[probe] Price snapshot saved (no model/MTD change)`;
+        console.log(line);
+        log.push(line);
+      }
+    } catch (e) {
+      priceSnapshotError = e instanceof Error ? e.message : String(e);
+      const line = `[probe] Price snapshot failed: ${priceSnapshotError}`;
+      console.warn(line);
+      log.push(line);
+    }
+
     return NextResponse.json({
       ok: true,
       runChanged,
       mtdChanged,
       currentGefs,
       lastGefs,
+      priceSnapshotSaved,
+      priceSnapshotError,
       log,
       elapsedMs: Date.now() - startMs,
     });
   }
+
+  const fullTriggerLine = `[probe] Full update triggered`;
+  console.log(fullTriggerLine);
+  log.push(fullTriggerLine);
 
   try {
     const origin = request.nextUrl.origin;

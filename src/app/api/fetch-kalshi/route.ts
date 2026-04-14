@@ -25,9 +25,7 @@ const KALSHI_PRIVATE_KEY = process.env.KALSHI_PRIVATE_KEY
   : undefined;
 const HAS_AUTH = !!(KALSHI_API_KEY_ID && KALSHI_PRIVATE_KEY);
 
-const KALSHI_API_BASE = HAS_AUTH
-  ? "https://trading-api.kalshi.com/trade-api/v2"
-  : "https://api.elections.kalshi.com/trade-api/v2";
+const KALSHI_API_BASE = "https://api.elections.kalshi.com/trade-api/v2";
 
 // Path prefix that must be included in the signed message, per Kalshi's
 // RSA-PSS auth spec: sign `timestamp + method + path` where path is the
@@ -655,7 +653,7 @@ export async function GET() {
   const log: string[] = [];
   log.push("[kalshi] FRESH FETCH (no cache)");
   log.push(
-    `[kalshi] Auth mode: ${HAS_AUTH ? "authenticated (trading-api)" : "unauthenticated (elections)"}`
+    `[kalshi] Auth mode: ${HAS_AUTH ? "authenticated (signed headers)" : "unauthenticated (no headers)"}`
   );
   if (HAS_AUTH) {
     log.push(

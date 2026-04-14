@@ -1,4 +1,4 @@
-import { NextRequest, NextResponse } from "next/server";
+import { NextResponse } from "next/server";
 import {
   KalshiApiResponse,
   KalshiStationData,
@@ -14,11 +14,6 @@ import {
 export const dynamic = "force-dynamic";
 
 const KALSHI_API_BASE = "https://api.elections.kalshi.com/trade-api/v2";
-
-// In-memory cache (5-minute TTL)
-let cachedResponse: KalshiApiResponse | null = null;
-let cacheTimestamp = 0;
-const CACHE_TTL_MS = 5 * 60 * 1000;
 
 interface KalshiMarket {
   ticker: string;
@@ -67,13 +62,6 @@ function parseVolume(fp: string | undefined | null): number {
 let lastKalshiRequest = 0;
 const KALSHI_MIN_DELAY_MS = 250; // 250ms for market discovery requests
 const KALSHI_OB_DELAY_MS = 100; // 100ms for lightweight orderbook requests
-
-// Orderbook cache (in-memory, 60s TTL per ticker)
-const orderbookCache = new Map<
-  string,
-  { yesBid: number | null; yesAsk: number | null; ts: number }
->();
-const ORDERBOOK_CACHE_TTL_MS = 60 * 1000;
 
 /**
  * Fetch from Kalshi API with rate limiting and error handling.
@@ -125,19 +113,12 @@ async function kalshiFetch(
  *   - { orderbook_fp: { yes_dollars: [["0.40", "100"], ...], no_dollars: [...] } }
  *
  * We try all known formats and extract top-of-book prices.
- *
- * Returns cached result if within 60s TTL.
  */
 async function fetchOrderbook(
   ticker: string,
   log: string[],
   debugFirst: boolean = false,
 ): Promise<{ yesBid: number | null; yesAsk: number | null }> {
-  const cached = orderbookCache.get(ticker);
-  if (cached && Date.now() - cached.ts < ORDERBOOK_CACHE_TTL_MS) {
-    return { yesBid: cached.yesBid, yesAsk: cached.yesAsk };
-  }
-
   // Use Record<string, unknown> so we can inspect all top-level keys
   const data = (await kalshiFetch(
     `/markets/${ticker}/orderbook`,
@@ -208,9 +189,7 @@ async function fetchOrderbook(
     );
   }
 
-  const result = { yesBid, yesAsk };
-  orderbookCache.set(ticker, { ...result, ts: Date.now() });
-  return result;
+  return { yesBid, yesAsk };
 }
 
 /**
@@ -565,15 +544,11 @@ async function discoverAndFetchMarkets(
   return result;
 }
 
-export async function GET(request: NextRequest) {
-  const forceRefresh = request.nextUrl.searchParams.get("force") === "1";
-
-  // Check cache
-  if (!forceRefresh && cachedResponse && Date.now() - cacheTimestamp < CACHE_TTL_MS) {
-    return NextResponse.json(cachedResponse);
-  }
+export async function GET() {
+  console.log("[kalshi] FRESH FETCH (no cache)");
 
   const log: string[] = [];
+  log.push("[kalshi] FRESH FETCH (no cache)");
   log.push(
     `[kalshi] Starting Kalshi market discovery at ${new Date().toISOString()}`
   );
@@ -591,9 +566,9 @@ export async function GET(request: NextRequest) {
     discoveryLog: log,
   };
 
-  // Cache the result
-  cachedResponse = response;
-  cacheTimestamp = Date.now();
-
-  return NextResponse.json(response);
+  return NextResponse.json(response, {
+    headers: {
+      "Cache-Control": "no-store, max-age=0",
+    },
+  });
 }

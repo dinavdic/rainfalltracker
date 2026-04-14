@@ -63,14 +63,26 @@ let lastKalshiRequest = 0;
 const KALSHI_MIN_DELAY_MS = 250; // 250ms for market discovery requests
 const KALSHI_OB_DELAY_MS = 100; // 100ms for lightweight orderbook requests
 
+// Per-ticker record of the most recent orderbook bid/ask we saw. Not a
+// serving cache — each request still fetches fresh. Used only to detect
+// when Kalshi's orderbook endpoint returns identical values across
+// consecutive live fetches (i.e. it's serving stale cached data), in
+// which case we fall back to lastPrice from /markets.
+const lastOrderbookValues = new Map<
+  string,
+  { yesBid: number | null; yesAsk: number | null }
+>();
+
 /**
  * Fetch from Kalshi API with rate limiting and error handling.
  * @param delayMs - minimum gap since last request (default 250ms, use 100ms for orderbook)
+ * @param extraHeaders - optional headers to merge into the request
  */
 async function kalshiFetch(
   path: string,
   log: string[],
   delayMs: number = KALSHI_MIN_DELAY_MS,
+  extraHeaders?: Record<string, string>,
 ): Promise<unknown | null> {
   // Enforce rate limit
   const now = Date.now();
@@ -87,7 +99,9 @@ async function kalshiFetch(
     const resp = await fetch(url, {
       headers: {
         Accept: "application/json",
+        ...(extraHeaders || {}),
       },
+      cache: "no-store",
       signal: AbortSignal.timeout(10000),
     });
 
@@ -119,11 +133,14 @@ async function fetchOrderbook(
   log: string[],
   debugFirst: boolean = false,
 ): Promise<{ yesBid: number | null; yesAsk: number | null }> {
-  // Use Record<string, unknown> so we can inspect all top-level keys
+  // Use Record<string, unknown> so we can inspect all top-level keys.
+  // Pass depth=10 + Cache-Control: no-cache to try to bypass any cache
+  // layer in front of Kalshi's orderbook endpoint.
   const data = (await kalshiFetch(
-    `/markets/${ticker}/orderbook`,
+    `/markets/${ticker}/orderbook?depth=10`,
     log,
     KALSHI_OB_DELAY_MS,
+    { "Cache-Control": "no-cache" },
   )) as Record<string, unknown> | null;
 
   if (!data) {
@@ -510,14 +527,40 @@ async function discoverAndFetchMarkets(
         const oldBid = price.yesBid;
         const oldAsk = price.yesAsk;
 
-        if (ob.yesBid !== null) price.yesBid = ob.yesBid;
-        if (ob.yesAsk !== null) price.yesAsk = ob.yesAsk;
-        price.isStale = price.yesBid === null || price.yesAsk === null;
+        // Detect stale orderbook: if the live fetch returned the exact
+        // same bid/ask we saw last time, Kalshi is probably serving
+        // cached data. Fall back to lastPrice (actual trade price) if
+        // we have it.
+        const prevOb = lastOrderbookValues.get(price.ticker);
+        const unchanged =
+          prevOb !== undefined &&
+          prevOb.yesBid === ob.yesBid &&
+          prevOb.yesAsk === ob.yesAsk;
 
-        log.push(
-          `[kalshi] OB ${station.code} >${thresholdKey}": ` +
-            `bid ${oldBid}c->${price.yesBid}c  ask ${oldAsk}c->${price.yesAsk}c`
-        );
+        if (unchanged && price.lastPrice !== null) {
+          log.push(
+            `[kalshi] ${station.code} >${thresholdKey}" orderbook unchanged, using lastPrice=${price.lastPrice}c`
+          );
+          price.yesBid = price.lastPrice;
+          price.yesAsk = price.lastPrice;
+          price.isStale = false;
+        } else {
+          if (ob.yesBid !== null) price.yesBid = ob.yesBid;
+          if (ob.yesAsk !== null) price.yesAsk = ob.yesAsk;
+          price.isStale = price.yesBid === null || price.yesAsk === null;
+
+          log.push(
+            `[kalshi] OB ${station.code} >${thresholdKey}": ` +
+              `bid ${oldBid}c->${price.yesBid}c  ask ${oldAsk}c->${price.yesAsk}c`
+          );
+        }
+
+        // Record the raw orderbook values (not the fallback override)
+        // so the next request can detect repeated identical responses.
+        lastOrderbookValues.set(price.ticker, {
+          yesBid: ob.yesBid,
+          yesAsk: ob.yesAsk,
+        });
       } else {
         log.push(
           `[kalshi] OB ${station.code} >${thresholdKey}": empty orderbook`

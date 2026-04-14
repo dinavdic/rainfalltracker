@@ -474,47 +474,34 @@ export default function StationCard({
                       })() : null}
                     </td>
                     <td className="py-1.5 text-right">
-                      {positionData && positionData.avgPrice !== null ? (() => {
-                        const posSide = positionData.position >= 0 ? "YES" : "NO";
-                        const posQty = Math.abs(positionData.position);
-                        const avg = positionData.avgPrice!;
-                        let pnl: number | null = null;
-                        if (marketProb !== null) {
-                          const yesMid = marketProb * 100;
-                          const mid = posSide === "YES" ? yesMid : 100 - yesMid;
-                          pnl = ((mid - avg) * posQty) / 100;
-                        }
-                        const pctGain =
-                          pnl !== null && avg > 0
-                            ? (pnl / ((avg * posQty) / 100)) * 100
-                            : null;
+                      {positionData ? (() => {
+                        const avg = positionData.avgPrice;
+                        // Unrealized P&L straight from Kalshi: current
+                        // marked value minus lifetime cost basis, both in
+                        // cents → convert to dollars for display.
+                        const unrealizedDollars =
+                          (positionData.marketExposure -
+                            positionData.totalTraded) /
+                          100;
+                        const feesDollars = positionData.feesPaid / 100;
                         const pnlColor =
-                          pnl === null
-                            ? "text-gray-500"
-                            : pnl >= 0
+                          unrealizedDollars >= 0
                             ? "text-green-700"
                             : "text-red-700";
                         return (
                           <>
                             <div className="text-[11px] text-gray-600 tabular-nums">
-                              {avg.toFixed(1)}&cent;
+                              {avg !== null ? `${avg.toFixed(1)}\u00A2` : "—"}
                             </div>
                             <div className={`text-[10px] font-semibold tabular-nums ${pnlColor}`}>
-                              {pnl !== null ? (
-                                <>
-                                  {pnl >= 0 ? "+" : "\u2212"}$
-                                  {Math.abs(pnl).toFixed(2)}
-                                  {pctGain !== null && (
-                                    <>
-                                      {" "}({pctGain >= 0 ? "+" : ""}
-                                      {pctGain.toFixed(0)}%)
-                                    </>
-                                  )}
-                                </>
-                              ) : (
-                                <span className="text-gray-300">&mdash;</span>
-                              )}
+                              {unrealizedDollars >= 0 ? "+" : "\u2212"}$
+                              {Math.abs(unrealizedDollars).toFixed(2)}
                             </div>
+                            {feesDollars > 0 && (
+                              <div className="text-[10px] text-gray-400 tabular-nums">
+                                (fees: ${feesDollars.toFixed(2)})
+                              </div>
+                            )}
                           </>
                         );
                       })() : null}
@@ -522,82 +509,6 @@ export default function StationCard({
                   </>
                 )}
               </tr>
-              {positionData && (() => {
-                // Render a slim row showing held contracts, avg entry, and
-                // unrealized + realized P&L in dollars.
-                const side = positionData.position >= 0 ? "YES" : "NO";
-                const qty = Math.abs(positionData.position);
-                const avg = positionData.avgPrice;
-                // Current mark: YES positions mark at YES mid; NO positions
-                // mark at (100 - YES mid).
-                let markCents: number | null = null;
-                if (marketProb !== null) {
-                  const yesMid = marketProb * 100;
-                  markCents = side === "YES" ? yesMid : 100 - yesMid;
-                }
-                const unrealizedCents =
-                  markCents !== null && avg !== null
-                    ? (markCents - avg) * qty
-                    : null;
-                const totalPnlCents =
-                  unrealizedCents !== null
-                    ? unrealizedCents +
-                      positionData.realizedPnl -
-                      positionData.feesPaid
-                    : null;
-                const pnlColor =
-                  totalPnlCents === null
-                    ? "text-gray-500"
-                    : totalPnlCents >= 0
-                    ? "text-green-700"
-                    : "text-red-700";
-                const pnlLabel =
-                  totalPnlCents === null
-                    ? "P&L: —"
-                    : `P&L ${totalPnlCents >= 0 ? "+" : "\u2212"}$${Math.abs(
-                        totalPnlCents / 100,
-                      ).toFixed(2)}`;
-                const sideColor =
-                  side === "YES"
-                    ? "text-green-700 bg-green-50"
-                    : "text-red-700 bg-red-50";
-                return (
-                  <tr className="bg-blue-50/30">
-                    <td className="py-1 pl-2 text-[11px] text-gray-500">
-                      &#x21B3; position
-                    </td>
-                    <td
-                      colSpan={colCount - 1}
-                      className="py-1 pr-2 text-[11px] text-gray-700"
-                    >
-                      <span className="inline-flex items-center gap-1.5 flex-wrap">
-                        <span
-                          className={`px-1.5 py-0.5 rounded text-[10px] font-semibold ${sideColor}`}
-                        >
-                          {side}
-                        </span>
-                        <span className="tabular-nums font-medium">
-                          &times;{qty}
-                        </span>
-                        <span className="text-gray-400">@</span>
-                        <span className="tabular-nums">
-                          {avg !== null ? `${avg.toFixed(1)}\u00A2` : "—"}
-                        </span>
-                        <span className="text-gray-300">&middot;</span>
-                        <span className={`tabular-nums font-semibold ${pnlColor}`}>
-                          {pnlLabel}
-                        </span>
-                        {positionData.realizedPnl !== 0 && (
-                          <span className="text-gray-400 text-[10px]">
-                            (realized {positionData.realizedPnl >= 0 ? "+" : "\u2212"}$
-                            {Math.abs(positionData.realizedPnl / 100).toFixed(2)})
-                          </span>
-                        )}
-                      </span>
-                    </td>
-                  </tr>
-                );
-              })()}
               {isChartOpen && (
                 <tr>
                   <td colSpan={colCount} className="p-0">

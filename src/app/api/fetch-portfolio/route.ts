@@ -132,6 +132,7 @@ async function fetchPortfolioPositions(): Promise<
         ticker: raw.ticker,
         position: positionSigned,
         marketExposure,
+        totalTraded: totalTradedCents,
         realizedPnl,
         feesPaid,
         avgPrice,

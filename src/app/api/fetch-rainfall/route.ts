@@ -93,6 +93,22 @@ function getSkillWeight(
   return fitted[idx];
 }
 
+/**
+ * Estimate which standard run cycle the Open-Meteo data reflects.
+ *
+ * We can't reliably infer the run time from hourly.time[0] because the
+ * ensemble API response starts at today 00:00 UTC regardless of when
+ * the model actually initialized. Instead we use a simple rule based
+ * on current UTC hour: before 18z, today's 00z run is the most recent
+ * one that's been fully processed and published; at 18z or later,
+ * today's 12z run has typically been published. This is approximate
+ * but good enough for the staleness indicator in the dashboard header.
+ */
+function estimateModelRunLabel(): string {
+  const nowHourUtc = new Date().getUTCHours();
+  return nowHourUtc < 18 ? "00z" : "12z";
+}
+
 interface IEMResult {
   valid: string;
   precip: number | string | null;
@@ -226,23 +242,9 @@ async function fetchSingleModelEnsemble(
     );
   }
 
-  // Detect model run from first forecast timestamp
-  let modelRunLabel: string | null = null;
-  const firstTime = hourly.time[0] as string | undefined;
-  if (firstTime) {
-    const fetchedAt = new Date().toISOString().substring(0, 16);
-    const firstHour = parseInt(firstTime.substring(11, 13), 10);
-    // Round to nearest standard model run cycle (00z, 06z, 12z, 18z)
-    const cycles = [0, 6, 12, 18];
-    const nearest = cycles.reduce((best, c) =>
-      Math.abs(c - firstHour) < Math.abs(best - firstHour) ? c : best
-    );
-    modelRunLabel = `${String(nearest).padStart(2, "0")}z`;
-    console.log(
-      `[ensemble] ${stationCode} ${model}: first forecast hour = ${firstTime}, ` +
-      `fetched at ${fetchedAt} (likely ${modelRunLabel} run)`
-    );
-  }
+  // Approximate the initialization time of the run we're consuming.
+  // See estimateModelRunLabel() for why we don't use hourly.time[0].
+  const modelRunLabel: string = estimateModelRunLabel();
 
   // Auto-detect ensemble member keys from the response
   const allKeys = Object.keys(hourly);

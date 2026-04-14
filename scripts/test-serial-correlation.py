@@ -92,8 +92,9 @@ def fetch_iem_year_raw(icao: str, year: int) -> list[dict]:
 def parse_raw_entries(raw: list[dict]) -> list[dict]:
     """
     Convert raw IEM entries into daily records with numeric precip.
-    Mirrors the filter applied during the main analysis: 'M' (missing)
-    and any non-numeric precip value (including 'T' trace) is dropped.
+    'M' (missing) is dropped. 'T' (trace, < 0.005") is treated as 0.0
+    since it is a valid observation of near-zero precipitation, not
+    missing data.
     """
     records = []
     for entry in raw:
@@ -101,12 +102,19 @@ def parse_raw_entries(raw: list[dict]) -> list[dict]:
         precip_val = entry.get("precip")
         if not date_str or precip_val is None or precip_val == "M":
             continue
+        # Trace: valid observation of near-zero precipitation
+        if precip_val == "T":
+            prcp = 0.0
+        else:
+            try:
+                prcp = max(0.0, float(precip_val))
+            except (ValueError, TypeError):
+                continue
         try:
-            prcp = max(0.0, float(precip_val))
             y, m, d = int(date_str[:4]), int(date_str[5:7]), int(date_str[8:10])
-            records.append({"year": y, "month": m, "day": d, "prcp": prcp})
-        except (ValueError, TypeError, IndexError):
+        except (ValueError, IndexError):
             continue
+        records.append({"year": y, "month": m, "day": d, "prcp": prcp})
     return records
 
 
@@ -273,6 +281,8 @@ def diagnose_station(code: str, info: dict, raw: list[dict]) -> None:
     # Per-(year, month) category counts
     buckets = categorize_entries(raw)
 
+    # Parser now counts trace ('T') as 0.0 (a valid observation), so
+    # the pass/fail threshold check must include trace days too.
     complete_years: list[int] = []
     incomplete_years: list[tuple[int, list[tuple[int, dict[str, int]]]]] = []
     for year in sorted(expected_years):
@@ -282,7 +292,7 @@ def diagnose_station(code: str, info: dict, raw: list[dict]) -> None:
                 "valid": 0, "trace": 0, "missing": 0,
                 "parse_error": 0, "total": 0,
             })
-            if b["valid"] < MIN_DAYS[m]:
+            if b["valid"] + b["trace"] < MIN_DAYS[m]:
                 months_fail.append((m, b))
         if not months_fail:
             complete_years.append(year)
@@ -299,8 +309,8 @@ def diagnose_station(code: str, info: dict, raw: list[dict]) -> None:
         print()
         print(
             f"  Dropped-year detail  "
-            f"(valid = numeric precip; trace = 'T'; miss = 'M'/null; "
-            f"perr = unparseable)"
+            f"(valid = numeric precip; trace = 'T' counted as 0.0; "
+            f"miss = 'M'/null; perr = unparseable)"
         )
         print(
             f"    {'year':>4} {'mo':>3} {'need':>4} "
@@ -310,43 +320,33 @@ def diagnose_station(code: str, info: dict, raw: list[dict]) -> None:
         for year, months_fail in incomplete_years:
             for m, b in months_fail:
                 need = MIN_DAYS[m]
-                trace_note = ""
-                if b["valid"] + b["trace"] >= need and b["valid"] < need:
-                    trace_note = (
-                        f"would pass if trace counted "
-                        f"(valid+trace={b['valid'] + b['trace']})"
-                    )
-                elif b["total"] == 0:
-                    trace_note = "no entries at all for this month"
-                elif b["missing"] > 0 and b["valid"] + b["trace"] < need:
-                    trace_note = f"{b['missing']} days reported as 'M'/missing"
+                usable = b["valid"] + b["trace"]
+                if b["total"] == 0:
+                    reason = "no entries at all for this month"
+                elif b["missing"] > 0 and usable < need:
+                    reason = f"{b['missing']} days reported as 'M'/missing"
                 else:
-                    trace_note = "short month in IEM response"
+                    reason = f"short month in IEM response ({b['total']} entries)"
                 print(
                     f"    {year:>4} {MONTH_NAME[m]:>3} {need:>4} "
                     f"{b['valid']:>5} {b['trace']:>5} {b['missing']:>4} "
-                    f"{b['parse_error']:>4} {b['total']:>5}  {trace_note}"
+                    f"{b['parse_error']:>4} {b['total']:>5}  {reason}"
                 )
 
-    # Aggregate summary: how many dropped-months would pass if trace counted?
-    would_pass_with_trace = 0
+    # Aggregate summary
     no_data_months = 0
     for _year, months_fail in incomplete_years:
-        for m, b in months_fail:
-            need = MIN_DAYS[m]
-            if b["valid"] + b["trace"] >= need and b["valid"] < need:
-                would_pass_with_trace += 1
+        for _m, b in months_fail:
             if b["total"] == 0:
                 no_data_months += 1
 
     total_failed_months = sum(len(mf) for _, mf in incomplete_years)
     print()
     print(f"  Failed-month breakdown (out of {total_failed_months} total):")
-    print(f"    - Would pass if 'T'(race) counted as a valid day: {would_pass_with_trace}")
-    print(f"    - Had zero entries returned from IEM:             {no_data_months}")
+    print(f"    - Had zero entries returned from IEM:            {no_data_months}")
     print(
-        f"    - Other (genuine missing/null days beyond trace):  "
-        f"{total_failed_months - would_pass_with_trace - no_data_months}"
+        f"    - Other (genuine missing/null days):             "
+        f"{total_failed_months - no_data_months}"
     )
 
 

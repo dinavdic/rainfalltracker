@@ -100,9 +100,15 @@ def fetch_iem_year(icao: str, year: int) -> list[dict]:
             if precip_val is None or precip_val == "M":
                 continue
 
-            prcp = float(precip_val)
-            if prcp < 0:
+            # "T" (trace, < 0.005") is a valid near-zero observation,
+            # not missing data — treat as 0.0 so arid stations keep
+            # their full record of dry days.
+            if precip_val == "T":
                 prcp = 0.0
+            else:
+                prcp = float(precip_val)
+                if prcp < 0:
+                    prcp = 0.0
 
             y, m, d = int(date_str[:4]), int(date_str[5:7]), int(date_str[8:10])
             records.append({"year": y, "month": m, "day": d, "prcp": prcp})

@@ -32,6 +32,33 @@ function daysInMonth(month: number, year: number): number {
   return new Date(year, month, 0).getDate();
 }
 
+/**
+ * Convert a model run label like "12z" into an absolute UTC Date for the
+ * most recent occurrence of that hour relative to `now`. If the hour hasn't
+ * happened yet today in UTC, roll back to yesterday's run.
+ */
+function runLabelToTimestamp(label: string | null | undefined, now: Date): Date | null {
+  if (!label) return null;
+  const m = label.match(/^(\d{1,2})z$/i);
+  if (!m) return null;
+  const hour = parseInt(m[1], 10);
+  if (!Number.isFinite(hour) || hour < 0 || hour > 23) return null;
+  const candidate = new Date(
+    Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), now.getUTCDate(), hour, 0, 0)
+  );
+  if (candidate.getTime() > now.getTime()) {
+    candidate.setUTCDate(candidate.getUTCDate() - 1);
+  }
+  return candidate;
+}
+
+function formatAge(ms: number): string {
+  const totalMinutes = Math.max(0, Math.floor(ms / 60000));
+  const hours = Math.floor(totalMinutes / 60);
+  const minutes = totalMinutes % 60;
+  return `${hours}h ${minutes}m`;
+}
+
 // Current ENSO phase — as of April 2026, neutral (transitioning from La Niña).
 // Update this when ENSO state changes, or fetch dynamically in the future.
 const CURRENT_ENSO_PHASE: EnsoPhase = "neutral";
@@ -213,6 +240,33 @@ export default function Dashboard() {
     ? new Date(rainfall.fetchedAt).toLocaleString()
     : null;
 
+  // Compute the worst-case (oldest) model-run age across all stations and
+  // both GEFS + ECMWF. Used to warn the user when forecasts are stale and
+  // a newer run might be available.
+  let oldestRunTs: Date | null = null;
+  if (rainfall) {
+    for (const station of Object.values(rainfall.stations)) {
+      const runs = station.ensemble?.modelRuns;
+      if (!runs) continue;
+      for (const label of [runs.gefs, runs.ecmwf]) {
+        const ts = runLabelToTimestamp(label, now);
+        if (ts && (!oldestRunTs || ts.getTime() < oldestRunTs.getTime())) {
+          oldestRunTs = ts;
+        }
+      }
+    }
+  }
+  const modelAgeMs = oldestRunTs ? now.getTime() - oldestRunTs.getTime() : null;
+  const modelAgeHours = modelAgeMs != null ? modelAgeMs / 3600000 : null;
+  const modelAgeColor =
+    modelAgeHours == null
+      ? ""
+      : modelAgeHours < 8
+      ? "bg-green-100 text-green-700"
+      : modelAgeHours < 14
+      ? "bg-yellow-100 text-yellow-800"
+      : "bg-red-100 text-red-700";
+
   return (
     <div className="min-h-screen bg-gray-50">
       <div className="max-w-6xl mx-auto px-4 py-8">
@@ -224,6 +278,19 @@ export default function Dashboard() {
           <p className="text-sm text-gray-500 mt-1">
             {daysRemaining} day{daysRemaining !== 1 ? "s" : ""} remaining
             {lastUpdated && <> &middot; Last updated: {lastUpdated}</>}
+            {modelAgeMs != null && (
+              <>
+                {" "}&middot;{" "}
+                <span className="inline-flex items-center gap-1">
+                  <span className="text-gray-400">Model age:</span>
+                  <span
+                    className={`inline-block px-1.5 py-0.5 rounded text-xs font-semibold ${modelAgeColor}`}
+                  >
+                    {formatAge(modelAgeMs)}
+                  </span>
+                </span>
+              </>
+            )}
             {" "}&middot;{" "}
             <span className="inline-flex items-center gap-1">
               <span className="text-gray-400">ENSO:</span>

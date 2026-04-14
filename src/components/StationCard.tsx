@@ -449,28 +449,34 @@ export default function StationCard({
                       {positionData ? (() => {
                         const posSide = positionData.position >= 0 ? "YES" : "NO";
                         const posQty = Math.abs(positionData.position);
-                        const avg = positionData.avgPrice;
-                        const marketValue = positionData.marketExposure / 100;
                         const posColor =
                           posSide === "YES"
                             ? "text-green-700"
                             : "text-red-700";
                         // Mark-to-market from live orderbook mid. YES marks
-                        // at yesMid; NO marks at (100 - yesMid).
+                        // at yesMid; NO marks at (100 - yesMid). Compare
+                        // to lifetime cost basis (total_traded_dollars) so
+                        // the percent matches Kalshi's own Total Return.
+                        let marketValue: number | null = null;
                         let pctGain: number | null = null;
                         if (
-                          avg !== null &&
-                          avg > 0 &&
                           kalshiPrice &&
                           kalshiPrice.yesBid !== null &&
                           kalshiPrice.yesAsk !== null
                         ) {
                           const yesMid =
                             (kalshiPrice.yesBid + kalshiPrice.yesAsk) / 2;
-                          const mid = posSide === "YES" ? yesMid : 100 - yesMid;
-                          const pnlDollars = ((mid - avg) * posQty) / 100;
-                          pctGain =
-                            (pnlDollars / ((avg * posQty) / 100)) * 100;
+                          const midCents =
+                            posSide === "YES" ? yesMid : 100 - yesMid;
+                          marketValue = (posQty * midCents) / 100;
+                          const totalTradedDollars =
+                            positionData.totalTraded / 100;
+                          if (totalTradedDollars > 0) {
+                            pctGain =
+                              ((marketValue - totalTradedDollars) /
+                                totalTradedDollars) *
+                              100;
+                          }
                         }
                         const pctColor =
                           pctGain === null
@@ -481,7 +487,11 @@ export default function StationCard({
                         return (
                           <>
                             <div className={`font-semibold tabular-nums ${posColor}`}>
-                              ${Math.round(marketValue)}
+                              {marketValue !== null ? (
+                                <>${Math.round(marketValue)}</>
+                              ) : (
+                                <span className="text-gray-300">&mdash;</span>
+                              )}
                             </div>
                             <div className={`font-semibold tabular-nums ${pctColor}`}>
                               {pctGain !== null ? (

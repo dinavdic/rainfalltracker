@@ -1,6 +1,6 @@
 import { promises as fs } from "fs";
 import path from "path";
-import { put, list } from "@vercel/blob";
+import { put, get } from "@vercel/blob";
 import { ForecastSnapshot, appendSnapshot } from "./convergence";
 
 /**
@@ -48,12 +48,15 @@ async function loadFromTmp(): Promise<ForecastSnapshot[] | null> {
 async function loadFromBlob(): Promise<ForecastSnapshot[]> {
   if (!hasBlobToken()) return [];
   try {
-    const { blobs } = await list({ prefix: BLOB_PATH });
-    const match = blobs.find((b) => b.pathname === BLOB_PATH);
-    if (!match) return [];
-    const resp = await fetch(match.url, { cache: "no-store" });
-    if (!resp.ok) return [];
-    const data = await resp.json();
+    // Private blobs require authentication — use the SDK's get() with the
+    // token rather than a raw fetch(url). useCache: false skips the CDN
+    // cache so we always read the latest snapshot batch the cron wrote.
+    const result = await get(BLOB_PATH, {
+      access: "private",
+      useCache: false,
+    });
+    if (!result || !result.stream) return [];
+    const data = await new Response(result.stream).json();
     return filterByAge(data);
   } catch (e) {
     console.warn(
@@ -75,7 +78,7 @@ async function saveToBlob(snapshots: ForecastSnapshot[]): Promise<void> {
   if (!hasBlobToken()) return;
   try {
     await put(BLOB_PATH, JSON.stringify(snapshots), {
-      access: "public",
+      access: "private",
       contentType: "application/json",
       addRandomSuffix: false,
       allowOverwrite: true,

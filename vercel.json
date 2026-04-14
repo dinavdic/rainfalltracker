@@ -1,12 +1,6 @@
 {
   "crons": [
-    {
-      "path": "/api/fetch-rainfall",
-      "schedule": "0 12 * * *"
-    },
-    {
-      "path": "/api/cron/update",
-      "schedule": "0 12 * * *"
-    }
+    { "path": "/api/cron/update", "schedule": "0 10 * * *" },
+    { "path": "/api/cron/update", "schedule": "0 21 * * *" }
   ]
 }

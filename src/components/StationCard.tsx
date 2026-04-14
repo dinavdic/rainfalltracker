@@ -213,7 +213,7 @@ export default function StationCard({
 
   // Column count for chart row colSpan
   const colCount =
-    4 + (hasForecast ? 1 : 0) + (hasKalshi ? 2 : 0) + (hasKalshi && hasForecast ? 1 : 0);
+    4 + (hasForecast ? 1 : 0) + (hasKalshi ? 4 : 0) + (hasKalshi && hasForecast ? 1 : 0);
 
   // Total volume across all thresholds for this station
   const totalVolume = hasKalshi
@@ -284,6 +284,8 @@ export default function StationCard({
                 {hasForecast && (
                   <th className="text-right pb-1 font-medium">Edge</th>
                 )}
+                <th className="text-right pb-1 font-medium">Position</th>
+                <th className="text-right pb-1 font-medium">Cost/P&amp;L</th>
               </>
             )}
           </tr>
@@ -454,6 +456,69 @@ export default function StationCard({
                         )}
                       </td>
                     )}
+                    <td className="py-1.5 text-right">
+                      {positionData ? (() => {
+                        const posSide = positionData.position >= 0 ? "YES" : "NO";
+                        const posQty = Math.abs(positionData.position);
+                        const posColor =
+                          posSide === "YES"
+                            ? "text-green-700 bg-green-50"
+                            : "text-red-700 bg-red-50";
+                        return (
+                          <span
+                            className={`inline-block px-1.5 py-0.5 rounded text-[11px] font-semibold tabular-nums ${posColor}`}
+                          >
+                            {posSide} &times;{posQty}
+                          </span>
+                        );
+                      })() : null}
+                    </td>
+                    <td className="py-1.5 text-right">
+                      {positionData && positionData.avgPrice !== null ? (() => {
+                        const posSide = positionData.position >= 0 ? "YES" : "NO";
+                        const posQty = Math.abs(positionData.position);
+                        const avg = positionData.avgPrice!;
+                        let pnl: number | null = null;
+                        if (marketProb !== null) {
+                          const yesMid = marketProb * 100;
+                          const mid = posSide === "YES" ? yesMid : 100 - yesMid;
+                          pnl = ((mid - avg) * posQty) / 100;
+                        }
+                        const pctGain =
+                          pnl !== null && avg > 0
+                            ? (pnl / ((avg * posQty) / 100)) * 100
+                            : null;
+                        const pnlColor =
+                          pnl === null
+                            ? "text-gray-500"
+                            : pnl >= 0
+                            ? "text-green-700"
+                            : "text-red-700";
+                        return (
+                          <>
+                            <div className="text-[11px] text-gray-600 tabular-nums">
+                              {avg.toFixed(1)}&cent;
+                            </div>
+                            <div className={`text-[10px] font-semibold tabular-nums ${pnlColor}`}>
+                              {pnl !== null ? (
+                                <>
+                                  {pnl >= 0 ? "+" : "\u2212"}$
+                                  {Math.abs(pnl).toFixed(2)}
+                                  {pctGain !== null && (
+                                    <>
+                                      {" "}({pctGain >= 0 ? "+" : ""}
+                                      {pctGain.toFixed(0)}%)
+                                    </>
+                                  )}
+                                </>
+                              ) : (
+                                <span className="text-gray-300">&mdash;</span>
+                              )}
+                            </div>
+                          </>
+                        );
+                      })() : null}
+                    </td>
                   </>
                 )}
               </tr>

@@ -56,9 +56,7 @@ function ProbabilityBadge({ value }: { value: number }) {
 
 function formatEdge(edge: number): string {
   const sign = edge >= 0 ? "+" : "";
-  return Math.abs(edge) < 10
-    ? `${sign}${edge.toFixed(1)}`
-    : `${sign}${Math.round(edge)}`;
+  return `${sign}${Math.round(edge)}`;
 }
 
 function EdgeBadge({ edge }: { edge: number }) {
@@ -324,8 +322,6 @@ export default function StationCard({
               ? loProb * 100 - marketProb * 100 : null;
             const bestEdge = showRange && marketProb !== null
               ? hiProb * 100 - marketProb * 100 : null;
-            const signsAgree = worstEdge !== null && bestEdge !== null
-              && ((worstEdge >= 0 && bestEdge >= 0) || (worstEdge < 0 && bestEdge < 0));
 
             // Kalshi price delta
             const priceDelta = kalshiDeltas?.[thresholdKey] ?? null;
@@ -445,7 +441,7 @@ export default function StationCard({
                             <EdgeBadge edge={edge} />
                             {worstEdge !== null && bestEdge !== null && (
                               <div className={`text-[10px] tabular-nums mt-0.5 ${
-                                signsAgree ? "text-green-600" : "text-red-500"
+                                edge >= 0 ? "text-green-600" : "text-red-600"
                               }`}>
                                 ({formatEdge(worstEdge)} to {formatEdge(bestEdge)})
                               </div>
@@ -459,16 +455,16 @@ export default function StationCard({
                     <td className="py-1.5 text-right">
                       {positionData ? (() => {
                         const posSide = positionData.position >= 0 ? "YES" : "NO";
-                        const posQty = Math.abs(positionData.position);
+                        const marketValue = positionData.marketExposure / 100;
                         const posColor =
                           posSide === "YES"
-                            ? "text-green-700 bg-green-50"
-                            : "text-red-700 bg-red-50";
+                            ? "text-green-700"
+                            : "text-red-700";
                         return (
                           <span
-                            className={`inline-block px-1.5 py-0.5 rounded text-[11px] font-semibold tabular-nums ${posColor}`}
+                            className={`text-[11px] font-semibold tabular-nums ${posColor}`}
                           >
-                            {posSide} &times;{posQty}
+                            ${marketValue.toFixed(2)}
                           </span>
                         );
                       })() : null}

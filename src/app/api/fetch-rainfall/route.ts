@@ -178,6 +178,134 @@ async function fetchIEMMTD(
 }
 
 /**
+ * Fetch the NWS CLI (Climatological Report) HTML for a station and
+ * extract the current month-to-date precipitation plus the report's
+ * data date. The CLI report is updated at least daily and is typically
+ * 0–1 days ahead of the IEM CLI JSON archive, which has a 1–2 day lag.
+ *
+ * stations.cliParams already encodes the correct site+product+issuedby
+ * query string for each station.
+ */
+interface NWSCLIResult {
+  mtd: number | null;
+  dataDate: string | null; // YYYY-MM-DD
+}
+
+const NWS_CLI_MONTHS: Record<string, number> = {
+  JANUARY: 1, FEBRUARY: 2, MARCH: 3, APRIL: 4, MAY: 5, JUNE: 6,
+  JULY: 7, AUGUST: 8, SEPTEMBER: 9, OCTOBER: 10, NOVEMBER: 11, DECEMBER: 12,
+};
+
+async function fetchNWSCLI(cliParams: string): Promise<NWSCLIResult> {
+  const url = `https://forecast.weather.gov/product.php?${cliParams}`;
+  const resp = await fetch(url, {
+    headers: { "User-Agent": NWS_USER_AGENT },
+    signal: AbortSignal.timeout(15000),
+  });
+  if (!resp.ok) {
+    throw new Error(`NWS CLI fetch failed: ${resp.status} ${resp.statusText}`);
+  }
+  const html = await resp.text();
+
+  // The CLI report text is inside a <pre> block; fall back to whole page
+  let text = html;
+  const preMatch = html.match(/<pre[^>]*>([\s\S]*?)<\/pre>/i);
+  if (preMatch) text = preMatch[1];
+  text = text
+    .replace(/<[^>]*>/g, "")
+    .replace(/&amp;/g, "&")
+    .replace(/&nbsp;/g, " ");
+
+  // Data date from the "CLIMATE SUMMARY FOR <MONTH> <DAY> <YEAR>" line
+  let dataDate: string | null = null;
+  const dateMatch = text.match(
+    /CLIMATE\s+SUMMARY\s+FOR\s+([A-Z]+)\s+(\d{1,2})\s+(\d{4})/i,
+  );
+  if (dateMatch) {
+    const month = NWS_CLI_MONTHS[dateMatch[1].toUpperCase()];
+    const day = parseInt(dateMatch[2], 10);
+    const year = parseInt(dateMatch[3], 10);
+    if (month && Number.isFinite(day) && Number.isFinite(year)) {
+      dataDate = `${year}-${String(month).padStart(2, "0")}-${String(day).padStart(2, "0")}`;
+    }
+  }
+
+  // MTD from "MONTH TO DATE <value>". The first number after the label
+  // is the observed value (followed by normal/departure/last-year cols).
+  let mtd: number | null = null;
+  const mtdMatch = text.match(/MONTH\s+TO\s+DATE\s+([\d.]+)/i);
+  if (mtdMatch) {
+    const val = parseFloat(mtdMatch[1]);
+    if (!isNaN(val)) mtd = val;
+  }
+
+  return { mtd, dataDate };
+}
+
+function formatShortDate(isoDate: string): string {
+  const d = new Date(isoDate + "T00:00:00Z");
+  if (isNaN(d.getTime())) return isoDate;
+  const month = d.toLocaleString("en-US", { month: "short", timeZone: "UTC" });
+  return `${month} ${d.getUTCDate()}`;
+}
+
+/**
+ * Reconcile IEM and NWS CLI MTD readings. If IEM data is more than 1
+ * day behind "now" (or missing entirely), we try the NWS CLI text
+ * report. Whichever source has the newer data date wins; logs the
+ * comparison when NWS is used.
+ */
+async function fetchMTDWithFallback(
+  stationCode: string,
+  iemCode: string,
+  cliParams: string,
+): Promise<{ mtd: number | null; lastDate: string | null }> {
+  let iem: { mtd: number | null; lastDate: string | null };
+  try {
+    iem = await fetchIEMMTD(iemCode);
+  } catch (e) {
+    console.warn(
+      `[mtd] ${stationCode}: IEM fetch failed: ${e instanceof Error ? e.message : String(e)}`,
+    );
+    iem = { mtd: null, lastDate: null };
+  }
+
+  const iemAgeDays = iem.lastDate
+    ? (Date.now() - new Date(iem.lastDate + "T00:00:00Z").getTime()) /
+      (24 * 60 * 60 * 1000)
+    : Infinity;
+
+  // Fast path: IEM is fresh enough
+  if (iem.mtd !== null && iemAgeDays <= 1) {
+    return iem;
+  }
+
+  // Fallback to NWS CLI
+  try {
+    const nws = await fetchNWSCLI(cliParams);
+    const nwsNewer =
+      nws.dataDate !== null &&
+      (iem.lastDate === null || nws.dataDate > iem.lastDate);
+
+    if (nws.mtd !== null && nwsNewer) {
+      const iemLabel =
+        iem.lastDate !== null
+          ? `IEM=${iem.mtd} (${formatShortDate(iem.lastDate)})`
+          : `IEM=null`;
+      const nwsLabel = `NWS=${nws.mtd} (${formatShortDate(nws.dataDate!)})`;
+      console.log(`[mtd] ${stationCode}: ${iemLabel}, ${nwsLabel}, using NWS`);
+      return { mtd: nws.mtd, lastDate: nws.dataDate };
+    }
+  } catch (e) {
+    console.warn(
+      `[mtd] ${stationCode}: NWS CLI fallback failed: ${e instanceof Error ? e.message : String(e)}`,
+    );
+  }
+
+  return iem;
+}
+
+/**
  * Compute summary statistics for an array of numbers.
  */
 function computeEnsembleStats(values: number[]): EnsembleStats {
@@ -650,12 +778,10 @@ export async function GET(request: NextRequest) {
   const stations: Record<string, StationRainfallData> = {};
 
   // Fetch all stations — ensemble requests are sequential (rate limited),
-  // but IEM and NWS QPF fallback run in parallel per station
+  // but MTD (IEM + NWS CLI fallback) and ensemble run in parallel per station
   for (const station of STATIONS) {
-    // Fetch IEM MTD and ensemble concurrently for this station
-    // (ensemble is rate-limited so we process stations sequentially)
     const [iemResult, ensembleResult] = await Promise.allSettled([
-      fetchIEMMTD(station.iemCode),
+      fetchMTDWithFallback(station.code, station.iemCode, station.cliParams),
       rateLimitedEnsembleFetch(station.lat, station.lon, station.code),
     ]);
 

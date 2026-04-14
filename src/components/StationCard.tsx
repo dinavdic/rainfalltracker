@@ -32,9 +32,7 @@ interface StationCardProps {
 }
 
 function ProbabilityBadge({ value }: { value: number }) {
-  const pct = value * 100;
-  const rounded = Math.round(pct);
-  const label = pct > 0 && pct < 10 ? pct.toFixed(1) : String(rounded);
+  const rounded = Math.round(value * 100);
   let colorClasses: string;
 
   if (rounded >= 60) {
@@ -49,7 +47,7 @@ function ProbabilityBadge({ value }: { value: number }) {
     <span
       className={`inline-block px-2 py-0.5 rounded text-xs font-semibold ${colorClasses}`}
     >
-      {label}%
+      {rounded}%
     </span>
   );
 }
@@ -359,12 +357,7 @@ export default function StationCard({
                   )}
                 </td>
                 <td className="px-1 py-1 text-right text-gray-400 tabular-nums">
-                  {(() => {
-                    const pct = t.baseRate * 100;
-                    return pct > 0 && pct < 10
-                      ? pct.toFixed(1)
-                      : String(Math.round(pct));
-                  })()}%
+                  {Math.round(t.baseRate * 100)}%
                 </td>
                 <td className="px-1 py-1 text-right">
                   <ProbabilityBadge value={t.climatologyProbability} />

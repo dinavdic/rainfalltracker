@@ -55,6 +55,7 @@ function safeInt(v: unknown): number {
 async function fetchPortfolioPositions(): Promise<
   Record<string, KalshiPosition>
 > {
+  console.log("[portfolio] Fetching positions...");
   // Paginate in case there are more than 100 positions.
   const byTicker: Record<string, KalshiPosition> = {};
   let cursor: string | undefined;
@@ -63,7 +64,7 @@ async function fetchPortfolioPositions(): Promise<
 
   do {
     pages++;
-    const qs = new URLSearchParams({ limit: "100" });
+    const qs = new URLSearchParams({ status: "open", limit: "100" });
     if (cursor) qs.set("cursor", cursor);
     const path = `/portfolio/positions?${qs.toString()}`;
 
@@ -76,23 +77,33 @@ async function fetchPortfolioPositions(): Promise<
     headers["KALSHI-ACCESS-TIMESTAMP"] = auth.timestamp;
     headers["KALSHI-ACCESS-SIGNATURE"] = auth.signature;
 
+    console.log(
+      `[portfolio] GET ${KALSHI_API_BASE}${path} (page ${pages})`,
+    );
     const resp = await fetch(`${KALSHI_API_BASE}${path}`, {
       headers,
       cache: "no-store",
       signal: AbortSignal.timeout(10000),
     });
     if (!resp.ok) {
+      const body = await resp.text().catch(() => "");
       throw new Error(
-        `Kalshi /portfolio/positions ${resp.status} ${resp.statusText}`,
+        `Kalshi /portfolio/positions ${resp.status} ${resp.statusText} — ${body.slice(0, 200)}`,
       );
     }
     const data = (await resp.json()) as KalshiPositionsResponse;
+    console.log(
+      `[portfolio] Page ${pages}: ${data.market_positions?.length ?? 0} raw market_positions returned`,
+    );
 
     for (const raw of data.market_positions || []) {
       if (!raw.ticker) continue;
       const position = safeInt(raw.position);
-      if (position === 0) continue; // skip closed-out tickers
       const marketExposure = Math.abs(safeInt(raw.market_exposure));
+      console.log(
+        `[portfolio] ${raw.ticker}: qty=${position} exposure=${marketExposure}`,
+      );
+      if (position === 0) continue; // skip closed-out tickers
       const realizedPnl = safeInt(raw.realized_pnl);
       const feesPaid = safeInt(raw.fees_paid);
       const absPos = Math.abs(position);
@@ -143,7 +154,7 @@ export async function GET() {
     });
   } catch (e) {
     const msg = e instanceof Error ? e.message : String(e);
-    console.error(`[portfolio] ${msg}`);
+    console.error(`[portfolio] Error: ${msg}`);
     const response: KalshiPortfolioResponse = {
       authenticated: true,
       positions: {},

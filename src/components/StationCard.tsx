@@ -277,13 +277,13 @@ export default function StationCard({
             )}
             {hasKalshi && (
               <>
-                <th className="text-right pb-1 font-medium text-[11px]">Yes</th>
-                <th className="text-right pb-1 font-medium text-[11px]">No</th>
+                <th className="text-right pb-1 font-medium text-[11px] min-w-[50px]">Yes</th>
+                <th className="text-right pb-1 font-medium text-[11px] min-w-[50px]">No</th>
                 {hasForecast && (
-                  <th className="text-right pb-1 font-medium">Edge</th>
+                  <th className="text-right pb-1 font-medium min-w-[50px]">Edge</th>
                 )}
-                <th className="text-right pb-1 font-medium">Position</th>
-                <th className="text-right pb-1 font-medium">Cost/P&amp;L</th>
+                <th className="text-right pb-1 font-medium min-w-[70px]">Position</th>
+                <th className="text-right pb-1 font-medium min-w-[70px]">Cost/P&amp;L</th>
               </>
             )}
           </tr>
@@ -464,24 +464,39 @@ export default function StationCard({
                           <span
                             className={`text-[11px] font-semibold tabular-nums ${posColor}`}
                           >
-                            ${marketValue.toFixed(2)}
+                            ${Math.round(marketValue)}
                           </span>
                         );
                       })() : null}
                     </td>
                     <td className="py-1.5 text-right">
                       {positionData ? (() => {
+                        const posSide = positionData.position >= 0 ? "YES" : "NO";
+                        const posQty = Math.abs(positionData.position);
                         const avg = positionData.avgPrice;
-                        // Unrealized P&L straight from Kalshi: current
-                        // marked value minus lifetime cost basis, both in
-                        // cents → convert to dollars for display.
-                        const unrealizedDollars =
-                          (positionData.marketExposure -
-                            positionData.totalTraded) /
-                          100;
-                        const feesDollars = positionData.feesPaid / 100;
+                        // Mark-to-market from live orderbook mid. YES marks
+                        // at yesMid; NO marks at (100 - yesMid).
+                        let pnlDollars: number | null = null;
+                        let pctGain: number | null = null;
+                        if (
+                          avg !== null &&
+                          kalshiPrice &&
+                          kalshiPrice.yesBid !== null &&
+                          kalshiPrice.yesAsk !== null
+                        ) {
+                          const yesMid =
+                            (kalshiPrice.yesBid + kalshiPrice.yesAsk) / 2;
+                          const mid = posSide === "YES" ? yesMid : 100 - yesMid;
+                          pnlDollars = ((mid - avg) * posQty) / 100;
+                          if (avg > 0) {
+                            pctGain =
+                              (pnlDollars / ((avg * posQty) / 100)) * 100;
+                          }
+                        }
                         const pnlColor =
-                          unrealizedDollars >= 0
+                          pnlDollars === null
+                            ? "text-gray-500"
+                            : pnlDollars >= 0
                             ? "text-green-700"
                             : "text-red-700";
                         return (
@@ -490,14 +505,21 @@ export default function StationCard({
                               {avg !== null ? `${avg.toFixed(1)}\u00A2` : "—"}
                             </div>
                             <div className={`text-[10px] font-semibold tabular-nums ${pnlColor}`}>
-                              {unrealizedDollars >= 0 ? "+" : "\u2212"}$
-                              {Math.abs(unrealizedDollars).toFixed(2)}
+                              {pnlDollars !== null ? (
+                                <>
+                                  {pnlDollars >= 0 ? "+" : "\u2212"}$
+                                  {Math.abs(pnlDollars).toFixed(2)}
+                                  {pctGain !== null && (
+                                    <>
+                                      {" "}({pctGain >= 0 ? "+" : ""}
+                                      {pctGain.toFixed(0)}%)
+                                    </>
+                                  )}
+                                </>
+                              ) : (
+                                <span className="text-gray-300">&mdash;</span>
+                              )}
                             </div>
-                            {feesDollars > 0 && (
-                              <div className="text-[10px] text-gray-400 tabular-nums">
-                                (fees: ${feesDollars.toFixed(2)})
-                              </div>
-                            )}
                           </>
                         );
                       })() : null}

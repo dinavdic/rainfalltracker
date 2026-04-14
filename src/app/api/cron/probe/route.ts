@@ -26,6 +26,22 @@ const PROBE_URL =
   "&hourly=precipitation&models=gfs_seamless&forecast_days=1";
 
 const STATE_BLOB_PATH = "snapshots/last-model-run.json";
+const NTFY_TOPIC_URL = "https://ntfy.sh/rainfall-din-updates";
+
+async function sendProbeNotification(body: string): Promise<void> {
+  try {
+    await fetch(NTFY_TOPIC_URL, {
+      method: "POST",
+      headers: { Title: "New Model Run Detected" },
+      body,
+      signal: AbortSignal.timeout(5000),
+    });
+  } catch (e) {
+    console.warn(
+      `[probe] ntfy notification failed: ${e instanceof Error ? e.message : String(e)}`,
+    );
+  }
+}
 
 interface LastRunState {
   gefs: string | null; // ISO timestamp of detected run init
@@ -198,6 +214,10 @@ export async function GET(request: NextRequest) {
   const line = `[probe] New model run detected: ${lastLabel} -> ${probe.runLabel}, triggering full update`;
   console.log(line);
   log.push(line);
+
+  await sendProbeNotification(
+    `New model run detected: ${lastLabel} → ${probe.runLabel}, full update triggered`,
+  );
 
   // Trigger the full update internally, carrying the cron secret
   try {

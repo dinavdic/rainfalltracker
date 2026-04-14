@@ -19,6 +19,101 @@ export const maxDuration = 120; // seconds — ensemble fetches can be slow
 // Must match Dashboard.tsx
 const CURRENT_ENSO_PHASE: EnsoPhase = "neutral";
 
+const NTFY_TOPIC_URL = "https://ntfy.sh/rainfall-din-updates";
+
+/**
+ * Convert a run label like "12z" into hours-ago-from-now, matching the
+ * resolution logic used by the dashboard header's Model age badge.
+ */
+function modelAgeLabel(runLabels: (string | null | undefined)[]): string {
+  const now = new Date();
+  let oldestMs: number | null = null;
+  for (const label of runLabels) {
+    if (!label) continue;
+    const m = label.match(/^(\d{1,2})z$/i);
+    if (!m) continue;
+    const hour = parseInt(m[1], 10);
+    if (!Number.isFinite(hour) || hour < 0 || hour > 23) continue;
+    const candidate = new Date(
+      Date.UTC(
+        now.getUTCFullYear(),
+        now.getUTCMonth(),
+        now.getUTCDate(),
+        hour,
+        0,
+        0,
+      ),
+    );
+    if (candidate.getTime() > now.getTime()) {
+      candidate.setUTCDate(candidate.getUTCDate() - 1);
+    }
+    const ageMs = now.getTime() - candidate.getTime();
+    if (oldestMs === null || ageMs > oldestMs) oldestMs = ageMs;
+  }
+  if (oldestMs === null) return "unknown";
+  const totalMinutes = Math.max(0, Math.floor(oldestMs / 60000));
+  const hours = Math.floor(totalMinutes / 60);
+  const minutes = totalMinutes % 60;
+  return `${hours}h ${minutes}m`;
+}
+
+/**
+ * Find the station+threshold with the largest |edge| across the snapshot,
+ * where edge = ensemble_probability - kalshi_mid_price (both in percent).
+ * Returns a formatted label like 'DEN >1" +32', or null if no edges exist.
+ */
+function computeTopEdge(
+  stationProbs: Record<string, StationProbabilities>,
+  kalshi: KalshiApiResponse | null,
+): string | null {
+  if (!kalshi) return null;
+  let bestLabel: string | null = null;
+  let bestAbs = 0;
+  let bestSigned = 0;
+  for (const [code, probs] of Object.entries(stationProbs)) {
+    const station = kalshi.stations[code];
+    if (!station) continue;
+    for (const t of probs.thresholds) {
+      const price = station.thresholds[t.threshold.toFixed(1)];
+      if (!price) continue;
+      let marketPct: number | null = null;
+      if (price.yesBid !== null && price.yesAsk !== null) {
+        marketPct = (price.yesBid + price.yesAsk) / 2;
+      } else if (price.lastPrice !== null) {
+        marketPct = price.lastPrice;
+      }
+      if (marketPct === null) continue;
+      const edge = t.ensembleProbability * 100 - marketPct;
+      const absEdge = Math.abs(edge);
+      if (absEdge > bestAbs) {
+        bestAbs = absEdge;
+        bestSigned = edge;
+        const threshLabel = `>${t.threshold.toFixed(t.threshold % 1 === 0 ? 0 : 1)}"`;
+        bestLabel = `${code} ${threshLabel}`;
+      }
+    }
+  }
+  if (!bestLabel) return null;
+  const sign = bestSigned >= 0 ? "+" : "";
+  return `${bestLabel} ${sign}${Math.round(bestSigned)}`;
+}
+
+async function sendUpdateNotification(body: string): Promise<void> {
+  try {
+    await fetch(NTFY_TOPIC_URL, {
+      method: "POST",
+      headers: { Title: "Rainfall Tracker Updated" },
+      body,
+      signal: AbortSignal.timeout(5000),
+    });
+  } catch (e) {
+    // Non-fatal — a notification failure must not break the cron
+    console.warn(
+      `[cron] ntfy notification failed: ${e instanceof Error ? e.message : String(e)}`,
+    );
+  }
+}
+
 /**
  * GET /api/cron/update
  *
@@ -128,6 +223,21 @@ export async function GET(request: NextRequest) {
 
     const elapsed = Date.now() - startMs;
     log.push(`[cron] Snapshot built and persisted to Blob + /tmp (${elapsed}ms total)`);
+
+    // --- Push notification (non-fatal on failure) ---
+    const stationCount = Object.keys(snapshot.stations).length;
+    const runLabels: (string | null | undefined)[] = [];
+    for (const s of Object.values(rainfall.stations)) {
+      runLabels.push(s.ensemble?.modelRuns?.gefs, s.ensemble?.modelRuns?.ecmwf);
+    }
+    const modelAge = modelAgeLabel(runLabels);
+    const topEdge = computeTopEdge(stationProbs, kalshi);
+    const topEdgeText = topEdge ?? "n/a";
+    const body =
+      `${stationCount} stations updated. ` +
+      `Model age: ${modelAge}. Top edge: ${topEdgeText}`;
+    await sendUpdateNotification(body);
+    log.push(`[cron] Notification sent (${body})`);
 
     for (const line of log) {
       console.log(line);

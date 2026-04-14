@@ -36,6 +36,12 @@ export interface KalshiAuthHeaders {
 /**
  * Compute Kalshi RSA-PSS auth headers for a given method + path. Returns
  * null in unauthenticated mode so callers can skip adding the headers.
+ *
+ * The signed message uses only the path portion *without* any query
+ * string — e.g. `/trade-api/v2/portfolio/positions`, not
+ * `/trade-api/v2/portfolio/positions?status=open`. The full path
+ * (including the query string) is still sent in the actual request URL;
+ * only the signature input strips it.
  */
 export function signKalshiRequest(
   method: string,
@@ -44,7 +50,9 @@ export function signKalshiRequest(
   if (!HAS_AUTH) return null;
   const timestamp = Date.now().toString();
   const upperMethod = method.toUpperCase();
-  const signInput = timestamp + upperMethod + KALSHI_API_PATH_PREFIX + path;
+  const pathWithoutQuery = path.split("?")[0];
+  const signInput =
+    timestamp + upperMethod + KALSHI_API_PATH_PREFIX + pathWithoutQuery;
   const privateKey = crypto.createPrivateKey(KALSHI_PRIVATE_KEY as string);
   const signature = crypto.sign("RSA-SHA256", Buffer.from(signInput), {
     key: privateKey,

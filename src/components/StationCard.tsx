@@ -464,10 +464,10 @@ export default function StationCard({
                             : "text-red-700";
                         // Mark-to-market from live orderbook mid. YES marks
                         // at yesMid; NO marks at (100 - yesMid).
-                        let pnlDollars: number | null = null;
                         let pctGain: number | null = null;
                         if (
                           avg !== null &&
+                          avg > 0 &&
                           kalshiPrice &&
                           kalshiPrice.yesBid !== null &&
                           kalshiPrice.yesAsk !== null
@@ -475,16 +475,14 @@ export default function StationCard({
                           const yesMid =
                             (kalshiPrice.yesBid + kalshiPrice.yesAsk) / 2;
                           const mid = posSide === "YES" ? yesMid : 100 - yesMid;
-                          pnlDollars = ((mid - avg) * posQty) / 100;
-                          if (avg > 0) {
-                            pctGain =
-                              (pnlDollars / ((avg * posQty) / 100)) * 100;
-                          }
+                          const pnlDollars = ((mid - avg) * posQty) / 100;
+                          pctGain =
+                            (pnlDollars / ((avg * posQty) / 100)) * 100;
                         }
-                        const pnlColor =
-                          pnlDollars === null
+                        const pctColor =
+                          pctGain === null
                             ? "text-gray-500"
-                            : pnlDollars >= 0
+                            : pctGain >= 0
                             ? "text-green-700"
                             : "text-red-700";
                         return (
@@ -492,17 +490,11 @@ export default function StationCard({
                             <div className={`font-semibold tabular-nums ${posColor}`}>
                               ${Math.round(marketValue)}
                             </div>
-                            <div className={`font-semibold tabular-nums ${pnlColor}`}>
-                              {pnlDollars !== null ? (
+                            <div className={`font-semibold tabular-nums ${pctColor}`}>
+                              {pctGain !== null ? (
                                 <>
-                                  {pnlDollars >= 0 ? "+" : "\u2212"}$
-                                  {Math.round(Math.abs(pnlDollars))}
-                                  {pctGain !== null && (
-                                    <>
-                                      {" "}({pctGain >= 0 ? "+" : ""}
-                                      {pctGain.toFixed(0)}%)
-                                    </>
-                                  )}
+                                  ({pctGain >= 0 ? "+" : ""}
+                                  {pctGain.toFixed(0)}%)
                                 </>
                               ) : (
                                 <span className="text-gray-300">&mdash;</span>

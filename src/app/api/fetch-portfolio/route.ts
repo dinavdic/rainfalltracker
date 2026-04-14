@@ -24,16 +24,13 @@ export const dynamic = "force-dynamic";
 
 interface KalshiRawPosition {
   ticker: string;
-  // Signed contract count: positive = YES, negative = NO.
-  position?: number;
-  // Cost basis for currently held contracts, in cents (integer).
-  market_exposure?: number;
-  // Realized P&L in cents.
-  realized_pnl?: number;
-  // Fees paid in cents.
-  fees_paid?: number;
-  // Cumulative traded amount (not used for avg price).
-  total_traded?: number;
+  // Signed contract count (string fixed-point). Positive = YES, negative = NO.
+  position_fp?: string;
+  // Cost basis strings in dollars (e.g. "34.35" for $34.35).
+  total_traded_dollars?: string;
+  market_exposure_dollars?: string;
+  realized_pnl_dollars?: string;
+  fees_paid_dollars?: string;
   [key: string]: unknown;
 }
 
@@ -43,13 +40,20 @@ interface KalshiPositionsResponse {
   cursor?: string;
 }
 
-function safeInt(v: unknown): number {
-  if (typeof v === "number" && Number.isFinite(v)) return Math.round(v);
-  if (typeof v === "string") {
-    const n = parseFloat(v);
-    return Number.isFinite(n) ? Math.round(n) : 0;
-  }
-  return 0;
+/**
+ * Parse a Kalshi dollar string (e.g. "34.35") into an integer number of
+ * cents. Returns 0 on missing/invalid input so arithmetic stays safe.
+ */
+function dollarsToCents(s: string | undefined | null): number {
+  if (!s) return 0;
+  const n = parseFloat(s);
+  return Number.isFinite(n) ? Math.round(n * 100) : 0;
+}
+
+function parseNum(s: string | undefined | null): number {
+  if (!s) return 0;
+  const n = parseFloat(s);
+  return Number.isFinite(n) ? n : 0;
 }
 
 async function fetchPortfolioPositions(): Promise<
@@ -98,20 +102,35 @@ async function fetchPortfolioPositions(): Promise<
 
     for (const raw of data.market_positions || []) {
       if (!raw.ticker) continue;
-      const position = safeInt(raw.position);
-      const marketExposure = Math.abs(safeInt(raw.market_exposure));
+      const positionSigned = parseNum(raw.position_fp);
+      const quantity = Math.abs(positionSigned);
+      const side: "yes" | "no" | null =
+        positionSigned > 0 ? "yes" : positionSigned < 0 ? "no" : null;
+
+      if (quantity === 0 || side === null) continue;
+
+      // Only surface rainfall markets on the dashboard.
+      if (!raw.ticker.startsWith("KXRAIN")) continue;
+
+      // Dollar strings → cents.
+      const totalTradedCents = dollarsToCents(raw.total_traded_dollars);
+      const marketExposure = dollarsToCents(raw.market_exposure_dollars);
+      const realizedPnl = dollarsToCents(raw.realized_pnl_dollars);
+      const feesPaid = dollarsToCents(raw.fees_paid_dollars);
+
+      // Average cost per contract, in cents. Derived from total_traded
+      // (which is the lifetime cost basis for the currently-held
+      // contracts when nothing's been closed out).
+      const avgPrice = quantity > 0 ? totalTradedCents / quantity : null;
+
+      const avgLabel = avgPrice !== null ? `${avgPrice.toFixed(1)}\u00A2` : "—";
       console.log(
-        `[portfolio] ${raw.ticker}: qty=${position} exposure=${marketExposure}`,
+        `[portfolio] ${raw.ticker}: ${side.toUpperCase()} \u00D7${quantity} @ ${avgLabel}`,
       );
-      if (position === 0) continue; // skip closed-out tickers
-      const realizedPnl = safeInt(raw.realized_pnl);
-      const feesPaid = safeInt(raw.fees_paid);
-      const absPos = Math.abs(position);
-      const avgPrice = absPos > 0 ? marketExposure / absPos : null;
 
       byTicker[raw.ticker] = {
         ticker: raw.ticker,
-        position,
+        position: positionSigned,
         marketExposure,
         realizedPnl,
         feesPaid,

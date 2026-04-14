@@ -16,12 +16,14 @@ and a significance flag. This tells us whether antecedent precipitation
 conditioning would actually improve the model, and for which stations.
 
 Usage:
-    python3 scripts/test-serial-correlation.py
+    python3 scripts/test-serial-correlation.py               # full analysis
+    python3 scripts/test-serial-correlation.py --diagnose    # inspect gaps
 
 Caches raw fetched data to scripts/.serial-correlation-cache.json so reruns
 are fast.
 """
 
+import argparse
 import json
 import os
 import sys
@@ -127,10 +129,12 @@ def fetch_station_raw(code: str, icao: str, cache: dict) -> list[dict]:
     """Fetch all years of raw IEM entries for a station, using cache when possible."""
     cache_key = f"{code}_raw_{START_YEAR}_{END_YEAR}"
     if cache_key in cache:
+        print(f"  (using cache: {len(cache[cache_key])} entries)", flush=True)
         return cache[cache_key]
 
     all_raw = []
     for year in range(START_YEAR, END_YEAR + 1):
+        print(f"  fetching {icao} {year}...", flush=True)
         raw = fetch_iem_year_raw(icao, year)
         all_raw.extend(raw)
         time.sleep(0.2)  # be polite to IEM
@@ -348,18 +352,20 @@ def diagnose_station(code: str, info: dict, raw: list[dict]) -> None:
 
 def run_diagnostics(codes: list[str]) -> None:
     """Fetch and diagnose the specified station codes."""
+    print("Starting diagnostics...", flush=True)
     cache = load_cache()
-    print(f"Diagnostic mode — stations: {', '.join(codes)}")
-    print(f"Years: {START_YEAR}-{END_YEAR}")
-    print(f"Cache: {CACHE_PATH}")
+    print(f"Diagnostic mode — stations: {', '.join(codes)}", flush=True)
+    print(f"Years: {START_YEAR}-{END_YEAR}", flush=True)
+    print(f"Cache: {CACHE_PATH}", flush=True)
     for code in codes:
         info = STATIONS.get(code)
         if info is None:
-            print(f"Unknown station code: {code}", file=sys.stderr)
+            print(f"Unknown station code: {code}", file=sys.stderr, flush=True)
             continue
-        print(f"\n[{code}] fetching / loading cache...")
+        print(f"\n[{code}] fetching / loading cache...", flush=True)
         raw = fetch_station_raw(code, info["icao"], cache)
         diagnose_station(code, info, raw)
+        sys.stdout.flush()
 
 
 # ---------- Statistics ----------
@@ -492,8 +498,23 @@ def print_summary(results: list[dict]) -> None:
 
 
 def main() -> None:
-    if "--diagnose" in sys.argv:
-        # Only the stations that previously showed 'insufficient data'
+    parser = argparse.ArgumentParser(
+        description=(
+            "Test whether Jan-Mar precipitation predicts April "
+            "precipitation at each tracked station."
+        )
+    )
+    parser.add_argument(
+        "--diagnose",
+        action="store_true",
+        help=(
+            "Run diagnostic mode for DEN, MDW, AUS, HOU only, reporting "
+            "per-year data completeness from IEM."
+        ),
+    )
+    args = parser.parse_args()
+
+    if args.diagnose:
         run_diagnostics(["DEN", "MDW", "AUS", "HOU"])
         return
 

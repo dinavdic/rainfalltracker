@@ -126,8 +126,13 @@ export interface StationProbabilities {
 export interface KalshiMarketPrice {
   ticker: string;
   lastPrice: number | null; // cents (0-100)
+  // Each side's top-of-book in cents (0-100). yesAsk = 100 - noBid and
+  // noAsk = 100 - yesBid by Kalshi's pricing identity, but we store all
+  // four independently so display and P&L can pick the right side.
   yesBid: number | null;
   yesAsk: number | null;
+  noBid: number | null;
+  noAsk: number | null;
   volume: number;
   isStale: boolean; // true when bid/ask unavailable, falling back to lastPrice
 }

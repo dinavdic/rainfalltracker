@@ -419,9 +419,9 @@ export default function StationCard({
                       )}
                     </td>
                     <td className="px-1 py-1 text-right text-[10px]">
-                      {kalshiPrice?.yesBid !== null && kalshiPrice?.yesBid !== undefined ? (
+                      {kalshiPrice?.noAsk !== null && kalshiPrice?.noAsk !== undefined ? (
                         <span className="inline-block px-1 py-0.5 rounded text-[10px] font-semibold tabular-nums bg-red-50 text-red-800">
-                          {Math.round(100 - kalshiPrice.yesBid)}&cent;
+                          {Math.round(kalshiPrice.noAsk)}&cent;
                         </span>
                       ) : (
                         <span className="text-gray-300">&mdash;</span>
@@ -453,22 +453,35 @@ export default function StationCard({
                           posSide === "YES"
                             ? "text-green-700"
                             : "text-red-700";
-                        // Live mark-to-market. YES marks at yesMid; NO
-                        // marks at (100 - yesMid). marketValue is what's
-                        // shown on line 1 and is also the numerator of the
-                        // Total Return percent on line 2 (denominator is
-                        // Kalshi's total_traded_dollars).
+                        // Live mark-to-market from the side actually held.
+                        // YES positions mark at yesMid = (yesBid+yesAsk)/2;
+                        // NO positions mark at noMid = (noBid+noAsk)/2
+                        // computed from the No side directly rather than
+                        // deriving from yesMid. marketValue is what's shown
+                        // on line 1 and is also the numerator of the Total
+                        // Return percent on line 2 (denominator is Kalshi's
+                        // total_traded_dollars).
                         let marketValue: number | null = null;
                         let pctGain: number | null = null;
-                        if (
-                          kalshiPrice &&
-                          kalshiPrice.yesBid !== null &&
-                          kalshiPrice.yesAsk !== null
-                        ) {
-                          const yesMid =
-                            (kalshiPrice.yesBid + kalshiPrice.yesAsk) / 2;
-                          const midCents =
-                            posSide === "YES" ? yesMid : 100 - yesMid;
+                        let midCents: number | null = null;
+                        if (kalshiPrice) {
+                          if (
+                            posSide === "YES" &&
+                            kalshiPrice.yesBid !== null &&
+                            kalshiPrice.yesAsk !== null
+                          ) {
+                            midCents =
+                              (kalshiPrice.yesBid + kalshiPrice.yesAsk) / 2;
+                          } else if (
+                            posSide === "NO" &&
+                            kalshiPrice.noBid !== null &&
+                            kalshiPrice.noAsk !== null
+                          ) {
+                            midCents =
+                              (kalshiPrice.noBid + kalshiPrice.noAsk) / 2;
+                          }
+                        }
+                        if (midCents !== null) {
                           marketValue = (posQty * midCents) / 100;
                           const totalTradedDollars =
                             positionData.totalTradedDollars;

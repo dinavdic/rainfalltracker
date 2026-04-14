@@ -75,7 +75,12 @@ const KALSHI_OB_DELAY_MS = 100; // 100ms for lightweight orderbook requests
 // which case we fall back to lastPrice from /markets.
 const lastOrderbookValues = new Map<
   string,
-  { yesBid: number | null; yesAsk: number | null }
+  {
+    yesBid: number | null;
+    yesAsk: number | null;
+    noBid: number | null;
+    noAsk: number | null;
+  }
 >();
 
 /**
@@ -152,7 +157,12 @@ async function fetchOrderbook(
   ticker: string,
   log: string[],
   debugFirst: boolean = false,
-): Promise<{ yesBid: number | null; yesAsk: number | null }> {
+): Promise<{
+  yesBid: number | null;
+  yesAsk: number | null;
+  noBid: number | null;
+  noAsk: number | null;
+}> {
   // Use Record<string, unknown> so we can inspect all top-level keys.
   // Pass depth=10 + Cache-Control: no-cache to try to bypass any cache
   // layer in front of Kalshi's orderbook endpoint.
@@ -164,7 +174,7 @@ async function fetchOrderbook(
   )) as Record<string, unknown> | null;
 
   if (!data) {
-    return { yesBid: null, yesAsk: null };
+    return { yesBid: null, yesAsk: null, noBid: null, noAsk: null };
   }
 
   // Always log the full raw response structure for the first orderbook
@@ -180,7 +190,7 @@ async function fetchOrderbook(
   }
 
   let yesBid: number | null = null;
-  let yesAsk: number | null = null;
+  let noBid: number | null = null;
 
   // --- Format 1: orderbook.yes / orderbook.no (integer cents) ---
   const ob = data.orderbook as
@@ -194,7 +204,7 @@ async function fetchOrderbook(
       yesBid = Math.max(...yesSide.map((e) => e[0]));
     }
     if (noSide.length > 0) {
-      yesAsk = 100 - Math.max(...noSide.map((e) => e[0]));
+      noBid = Math.max(...noSide.map((e) => e[0]));
     }
   }
 
@@ -203,30 +213,36 @@ async function fetchOrderbook(
   const obFp = data.orderbook_fp as
     | { yes_dollars?: string[][]; no_dollars?: string[][]; yes?: string[][]; no?: string[][] }
     | undefined;
-  if (obFp && yesBid === null && yesAsk === null) {
+  if (obFp && yesBid === null && noBid === null) {
     const yesDollars = obFp.yes_dollars || obFp.yes || [];
     const noDollars = obFp.no_dollars || obFp.no || [];
 
     if (yesDollars.length > 0) {
-      const prices = yesDollars.map((e) => Math.round(parseFloat(e[0]) * 100));
-      yesBid = Math.max(...prices.filter((p) => !isNaN(p)));
+      const prices = yesDollars
+        .map((e) => Math.round(parseFloat(e[0]) * 100))
+        .filter((p) => !isNaN(p));
+      if (prices.length > 0) yesBid = Math.max(...prices);
     }
     if (noDollars.length > 0) {
-      const prices = noDollars.map((e) => Math.round(parseFloat(e[0]) * 100));
-      const bestNoBid = Math.max(...prices.filter((p) => !isNaN(p)));
-      if (!isNaN(bestNoBid)) {
-        yesAsk = 100 - bestNoBid;
-      }
+      const prices = noDollars
+        .map((e) => Math.round(parseFloat(e[0]) * 100))
+        .filter((p) => !isNaN(p));
+      if (prices.length > 0) noBid = Math.max(...prices);
     }
   }
+
+  // Derive the asks from the opposite side's top bid: the cost to buy
+  // YES is (100 - highest NO bid), and vice versa.
+  const yesAsk = noBid !== null ? 100 - noBid : null;
+  const noAsk = yesBid !== null ? 100 - yesBid : null;
 
   if (debugFirst) {
     log.push(
-      `[kalshi] Orderbook parsed (${ticker}): yesBid=${yesBid}c yesAsk=${yesAsk}c`
+      `[kalshi] Orderbook parsed (${ticker}): yesBid=${yesBid}c yesAsk=${yesAsk}c noBid=${noBid}c noAsk=${noAsk}c`
     );
   }
 
-  return { yesBid, yesAsk };
+  return { yesBid, yesAsk, noBid, noAsk };
 }
 
 /**
@@ -396,11 +412,18 @@ async function discoverAndFetchMarkets(
         );
       }
 
+      // Derive No side from YES quotes until the orderbook refresh
+      // overwrites with live values: noBid = 100 - yesAsk, noAsk = 100 - yesBid.
+      const noBid = yesAsk !== null ? 100 - yesAsk : null;
+      const noAsk = yesBid !== null ? 100 - yesBid : null;
+
       const price: KalshiMarketPrice = {
         ticker: market.ticker,
         lastPrice,
         yesBid,
         yesAsk,
+        noBid,
+        noAsk,
         volume,
         isStale,
       };
@@ -543,7 +566,12 @@ async function discoverAndFetchMarkets(
       if (isDebug) debuggedFirst = true;
       orderbookFetches++;
 
-      if (ob.yesBid !== null || ob.yesAsk !== null) {
+      if (
+        ob.yesBid !== null ||
+        ob.yesAsk !== null ||
+        ob.noBid !== null ||
+        ob.noAsk !== null
+      ) {
         const oldBid = price.yesBid;
         const oldAsk = price.yesAsk;
 
@@ -555,7 +583,9 @@ async function discoverAndFetchMarkets(
         const unchanged =
           prevOb !== undefined &&
           prevOb.yesBid === ob.yesBid &&
-          prevOb.yesAsk === ob.yesAsk;
+          prevOb.yesAsk === ob.yesAsk &&
+          prevOb.noBid === ob.noBid &&
+          prevOb.noAsk === ob.noAsk;
 
         if (unchanged && price.lastPrice !== null) {
           log.push(
@@ -563,15 +593,20 @@ async function discoverAndFetchMarkets(
           );
           price.yesBid = price.lastPrice;
           price.yesAsk = price.lastPrice;
+          price.noBid = 100 - price.lastPrice;
+          price.noAsk = 100 - price.lastPrice;
           price.isStale = false;
         } else {
           if (ob.yesBid !== null) price.yesBid = ob.yesBid;
           if (ob.yesAsk !== null) price.yesAsk = ob.yesAsk;
+          if (ob.noBid !== null) price.noBid = ob.noBid;
+          if (ob.noAsk !== null) price.noAsk = ob.noAsk;
           price.isStale = price.yesBid === null || price.yesAsk === null;
 
           log.push(
             `[kalshi] OB ${station.code} >${thresholdKey}": ` +
-              `bid ${oldBid}c->${price.yesBid}c  ask ${oldAsk}c->${price.yesAsk}c`
+              `bid ${oldBid}c->${price.yesBid}c  ask ${oldAsk}c->${price.yesAsk}c ` +
+              `noBid=${price.noBid}c noAsk=${price.noAsk}c`
           );
         }
 
@@ -580,6 +615,8 @@ async function discoverAndFetchMarkets(
         lastOrderbookValues.set(price.ticker, {
           yesBid: ob.yesBid,
           yesAsk: ob.yesAsk,
+          noBid: ob.noBid,
+          noAsk: ob.noAsk,
         });
       } else {
         log.push(

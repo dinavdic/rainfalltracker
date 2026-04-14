@@ -11,6 +11,7 @@ import {
   HistoricalData,
 } from "@/lib/types";
 import { saveRainfallData, loadRainfallData, isCacheFresh } from "@/lib/data-store";
+import { fetchNWSCLI, formatShortDate } from "@/lib/nws-cli";
 import { promises as fs } from "fs";
 import path from "path";
 
@@ -175,78 +176,6 @@ async function fetchIEMMTD(
   }
 
   return { mtd: latestMtd, lastDate: latestDate };
-}
-
-/**
- * Fetch the NWS CLI (Climatological Report) HTML for a station and
- * extract the current month-to-date precipitation plus the report's
- * data date. The CLI report is updated at least daily and is typically
- * 0–1 days ahead of the IEM CLI JSON archive, which has a 1–2 day lag.
- *
- * stations.cliParams already encodes the correct site+product+issuedby
- * query string for each station.
- */
-interface NWSCLIResult {
-  mtd: number | null;
-  dataDate: string | null; // YYYY-MM-DD
-}
-
-const NWS_CLI_MONTHS: Record<string, number> = {
-  JANUARY: 1, FEBRUARY: 2, MARCH: 3, APRIL: 4, MAY: 5, JUNE: 6,
-  JULY: 7, AUGUST: 8, SEPTEMBER: 9, OCTOBER: 10, NOVEMBER: 11, DECEMBER: 12,
-};
-
-async function fetchNWSCLI(cliParams: string): Promise<NWSCLIResult> {
-  const url = `https://forecast.weather.gov/product.php?${cliParams}`;
-  const resp = await fetch(url, {
-    headers: { "User-Agent": NWS_USER_AGENT },
-    signal: AbortSignal.timeout(15000),
-  });
-  if (!resp.ok) {
-    throw new Error(`NWS CLI fetch failed: ${resp.status} ${resp.statusText}`);
-  }
-  const html = await resp.text();
-
-  // The CLI report text is inside a <pre> block; fall back to whole page
-  let text = html;
-  const preMatch = html.match(/<pre[^>]*>([\s\S]*?)<\/pre>/i);
-  if (preMatch) text = preMatch[1];
-  text = text
-    .replace(/<[^>]*>/g, "")
-    .replace(/&amp;/g, "&")
-    .replace(/&nbsp;/g, " ");
-
-  // Data date from the "CLIMATE SUMMARY FOR <MONTH> <DAY> <YEAR>" line
-  let dataDate: string | null = null;
-  const dateMatch = text.match(
-    /CLIMATE\s+SUMMARY\s+FOR\s+([A-Z]+)\s+(\d{1,2})\s+(\d{4})/i,
-  );
-  if (dateMatch) {
-    const month = NWS_CLI_MONTHS[dateMatch[1].toUpperCase()];
-    const day = parseInt(dateMatch[2], 10);
-    const year = parseInt(dateMatch[3], 10);
-    if (month && Number.isFinite(day) && Number.isFinite(year)) {
-      dataDate = `${year}-${String(month).padStart(2, "0")}-${String(day).padStart(2, "0")}`;
-    }
-  }
-
-  // MTD from "MONTH TO DATE <value>". The first number after the label
-  // is the observed value (followed by normal/departure/last-year cols).
-  let mtd: number | null = null;
-  const mtdMatch = text.match(/MONTH\s+TO\s+DATE\s+([\d.]+)/i);
-  if (mtdMatch) {
-    const val = parseFloat(mtdMatch[1]);
-    if (!isNaN(val)) mtd = val;
-  }
-
-  return { mtd, dataDate };
-}
-
-function formatShortDate(isoDate: string): string {
-  const d = new Date(isoDate + "T00:00:00Z");
-  if (isNaN(d.getTime())) return isoDate;
-  const month = d.toLocaleString("en-US", { month: "short", timeZone: "UTC" });
-  return `${month} ${d.getUTCDate()}`;
 }
 
 /**

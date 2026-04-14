@@ -1,23 +1,29 @@
 import { NextRequest, NextResponse } from "next/server";
 import { put, get } from "@vercel/blob";
+import { STATIONS } from "@/lib/stations";
+import { fetchNWSCLI, formatShortDate } from "@/lib/nws-cli";
 
 export const dynamic = "force-dynamic";
-export const maxDuration = 30;
+export const maxDuration = 60;
 
 /**
  * GET /api/cron/probe
  *
- * Lightweight every-20-minutes check for a fresh GEFS model run. Makes
- * a single small Open-Meteo request for Denver with forecast_days=1,
- * detects the run initialization time by finding the first hour where
- * ensemble members diverge (members are identical in the hindcast tail
- * and begin to differ at the first forecast step), and compares that
- * timestamp against the last known run stored in Blob.
+ * Lightweight every-20-minutes probe for fresh data. Two checks:
  *
- * If the run has changed, calls /api/cron/update internally to refresh
- * all stations and persist a new snapshot. If unchanged, exits quickly.
+ * 1) New GEFS model run — makes a single small Open-Meteo request for
+ *    Denver with forecast_days=1 and detects the run initialization
+ *    time by finding the first hour where ensemble members diverge
+ *    (members are identical in the hindcast tail and begin to differ
+ *    at the first forecast step).
  *
- * Secured with the same CRON_SECRET bearer token as /api/cron/update.
+ * 2) New NWS CLI publication — fetches the CLI for all stations on
+ *    every probe run and compares the parsed data date against
+ *    last-mtd.json in Blob.
+ *
+ * If EITHER check finds new data, fires a single internal call to
+ * /api/cron/update so the dashboard picks it up within 20 minutes of
+ * publication. Secured with the same CRON_SECRET bearer token.
  */
 
 const PROBE_URL =
@@ -25,56 +31,33 @@ const PROBE_URL =
   "?latitude=39.86&longitude=-104.67" +
   "&hourly=precipitation&models=gfs_seamless&forecast_days=1";
 
-const STATE_BLOB_PATH = "snapshots/last-model-run.json";
+const RUN_STATE_BLOB_PATH = "snapshots/last-model-run.json";
+const MTD_STATE_BLOB_PATH = "snapshots/last-mtd.json";
 const NTFY_TOPIC_URL = "https://ntfy.sh/rainfall-din-updates";
-
-async function sendProbeNotification(body: string): Promise<void> {
-  try {
-    await fetch(NTFY_TOPIC_URL, {
-      method: "POST",
-      headers: { Title: "New Model Run Detected" },
-      body,
-      signal: AbortSignal.timeout(5000),
-    });
-  } catch (e) {
-    console.warn(
-      `[probe] ntfy notification failed: ${e instanceof Error ? e.message : String(e)}`,
-    );
-  }
-}
-
-interface LastRunState {
-  gefs: string | null; // ISO timestamp of detected run init
-  lastChecked: string;
-}
 
 function hasBlobToken(): boolean {
   return !!process.env.BLOB_READ_WRITE_TOKEN;
 }
 
-async function loadLastRun(): Promise<LastRunState | null> {
+async function loadBlobJson<T>(path: string): Promise<T | null> {
   if (!hasBlobToken()) return null;
   try {
-    const result = await get(STATE_BLOB_PATH, {
-      access: "private",
-      useCache: false,
-    });
+    const result = await get(path, { access: "private", useCache: false });
     if (!result || !result.stream) return null;
-    return (await new Response(result.stream).json()) as LastRunState;
+    return (await new Response(result.stream).json()) as T;
   } catch (e) {
-    // Not-found on first run is expected — don't spam warnings
     const msg = e instanceof Error ? e.message : String(e);
     if (!/not\s*found/i.test(msg)) {
-      console.warn(`[probe] load state failed: ${msg}`);
+      console.warn(`[probe] load ${path} failed: ${msg}`);
     }
     return null;
   }
 }
 
-async function saveLastRun(state: LastRunState): Promise<void> {
+async function saveBlobJson(path: string, value: unknown): Promise<void> {
   if (!hasBlobToken()) return;
   try {
-    await put(STATE_BLOB_PATH, JSON.stringify(state), {
+    await put(path, JSON.stringify(value), {
       access: "private",
       contentType: "application/json",
       addRandomSuffix: false,
@@ -82,9 +65,16 @@ async function saveLastRun(state: LastRunState): Promise<void> {
     });
   } catch (e) {
     console.warn(
-      `[probe] save state failed: ${e instanceof Error ? e.message : String(e)}`,
+      `[probe] save ${path} failed: ${e instanceof Error ? e.message : String(e)}`,
     );
   }
+}
+
+// --- Model run probe ---
+
+interface LastRunState {
+  gefs: string | null;
+  lastChecked: string;
 }
 
 /**
@@ -121,7 +111,7 @@ function toRunLabel(ts: string | null): string {
   return `${ts.substring(11, 13)}z`;
 }
 
-async function fetchProbe(): Promise<{
+async function fetchRunProbe(): Promise<{
   runTime: string | null;
   runLabel: string;
 }> {
@@ -147,6 +137,35 @@ async function fetchProbe(): Promise<{
   return { runTime, runLabel: toRunLabel(runTime) };
 }
 
+// --- MTD probe ---
+
+interface StationMtdState {
+  mtd: number;
+  dataDate: string; // YYYY-MM-DD
+  lastChecked: string;
+}
+
+type MtdStateMap = Record<string, StationMtdState>;
+
+// --- Notifications ---
+
+async function sendNotification(title: string, body: string): Promise<void> {
+  try {
+    await fetch(NTFY_TOPIC_URL, {
+      method: "POST",
+      headers: { Title: title },
+      body,
+      signal: AbortSignal.timeout(5000),
+    });
+  } catch (e) {
+    console.warn(
+      `[probe] ntfy notification failed: ${e instanceof Error ? e.message : String(e)}`,
+    );
+  }
+}
+
+// --- Handler ---
+
 export async function GET(request: NextRequest) {
   const secret = process.env.CRON_SECRET;
   if (!secret) {
@@ -163,63 +182,120 @@ export async function GET(request: NextRequest) {
 
   const startMs = Date.now();
   const log: string[] = [];
+  const nowDate = new Date();
+  const nowIso = nowDate.toISOString();
 
-  let probe: { runTime: string | null; runLabel: string };
+  // --- 1. Model run probe ---
+  let runProbe: { runTime: string | null; runLabel: string };
   try {
-    probe = await fetchProbe();
+    runProbe = await fetchRunProbe();
   } catch (e) {
     const msg = e instanceof Error ? e.message : String(e);
     console.error(`[probe] ${msg}`);
     return NextResponse.json({ error: msg }, { status: 502 });
   }
 
-  const lastState = await loadLastRun();
-  const lastGefs = lastState?.gefs ?? null;
-  const lastLabel = toRunLabel(lastGefs);
-  const currentGefs = probe.runTime;
-  const now = new Date().toISOString();
+  const lastRunState = await loadBlobJson<LastRunState>(RUN_STATE_BLOB_PATH);
+  const lastGefs = lastRunState?.gefs ?? null;
+  const lastRunLabel = toRunLabel(lastGefs);
+  const currentGefs = runProbe.runTime;
 
-  // Always refresh lastChecked so we can see the probe is alive in Blob
-  await saveLastRun({ gefs: currentGefs, lastChecked: now });
+  await saveBlobJson(RUN_STATE_BLOB_PATH, {
+    gefs: currentGefs,
+    lastChecked: nowIso,
+  });
 
-  // No divergence detected — can't reliably tell if run is new, skip
-  if (!currentGefs) {
-    const line = `[probe] Could not detect run time from probe response, skipping`;
+  const runChanged = !!currentGefs && currentGefs !== lastGefs;
+  if (runChanged) {
+    const line = `[probe] New model run detected: ${lastRunLabel} -> ${runProbe.runLabel}, triggering full update`;
     console.log(line);
     log.push(line);
+    await sendNotification(
+      "New Model Run Detected",
+      `New model run detected: ${lastRunLabel} → ${runProbe.runLabel}, full update triggered`,
+    );
+  } else if (!currentGefs) {
+    const line = `[probe] Could not detect run time from probe response`;
+    console.log(line);
+    log.push(line);
+  } else {
+    const line = `[probe] No new run (still ${runProbe.runLabel})`;
+    console.log(line);
+    log.push(line);
+  }
+
+  // --- 2. MTD probe — check all stations every run ---
+  const lastMtdState =
+    (await loadBlobJson<MtdStateMap>(MTD_STATE_BLOB_PATH)) ?? {};
+  const mtdUpdatedState: MtdStateMap = { ...lastMtdState };
+  const mtdChanges: string[] = [];
+
+  log.push(`[probe] Checking MTD for all ${STATIONS.length} stations`);
+  for (const station of STATIONS) {
+    try {
+      const nws = await fetchNWSCLI(station.cliParams);
+      if (nws.mtd === null || nws.dataDate === null) {
+        log.push(
+          `[probe] ${station.code}: NWS CLI parsed no MTD/date, skipping`,
+        );
+        continue;
+      }
+      const prev = lastMtdState[station.code];
+      const prevDate = prev?.dataDate ?? null;
+      const isNewer = prevDate === null || nws.dataDate > prevDate;
+
+      if (isNewer) {
+        const prevMtd = prev ? `${prev.mtd}` : "?";
+        const line = `[probe] New MTD for ${station.code}: ${prevMtd} → ${nws.mtd} (${formatShortDate(nws.dataDate)})`;
+        console.log(line);
+        log.push(line);
+        mtdChanges.push(
+          `${station.code}: ${prevMtd} → ${nws.mtd} (${formatShortDate(nws.dataDate)})`,
+        );
+      }
+
+      mtdUpdatedState[station.code] = {
+        mtd: nws.mtd,
+        dataDate: nws.dataDate,
+        lastChecked: nowIso,
+      };
+    } catch (e) {
+      const msg = e instanceof Error ? e.message : String(e);
+      console.warn(`[probe] ${station.code}: NWS CLI fetch failed: ${msg}`);
+      log.push(`[probe] ${station.code}: NWS CLI fetch failed: ${msg}`);
+    }
+  }
+
+  // Persist MTD state (includes refreshed lastChecked for stations we hit)
+  await saveBlobJson(MTD_STATE_BLOB_PATH, mtdUpdatedState);
+
+  const mtdChanged = mtdChanges.length > 0;
+  if (!mtdChanged) {
+    const line = `[probe] No new MTD data`;
+    console.log(line);
+    log.push(line);
+  }
+
+  if (mtdChanged) {
+    await sendNotification(
+      "New CLI Report Published",
+      mtdChanges.join("; "),
+    );
+  }
+
+  // --- 3. Fire full update if either signal detected new data ---
+  if (!runChanged && !mtdChanged) {
     return NextResponse.json({
       ok: true,
-      changed: false,
-      current: null,
-      last: lastGefs,
+      runChanged,
+      mtdChanged,
+      currentGefs,
+      lastGefs,
       log,
       elapsedMs: Date.now() - startMs,
     });
   }
 
-  if (currentGefs === lastGefs) {
-    const line = `[probe] No new run (still ${probe.runLabel}), skipping`;
-    console.log(line);
-    log.push(line);
-    return NextResponse.json({
-      ok: true,
-      changed: false,
-      current: currentGefs,
-      last: lastGefs,
-      log,
-      elapsedMs: Date.now() - startMs,
-    });
-  }
-
-  const line = `[probe] New model run detected: ${lastLabel} -> ${probe.runLabel}, triggering full update`;
-  console.log(line);
-  log.push(line);
-
-  await sendProbeNotification(
-    `New model run detected: ${lastLabel} → ${probe.runLabel}, full update triggered`,
-  );
-
-  // Trigger the full update internally, carrying the cron secret
   try {
     const origin = request.nextUrl.origin;
     const updateResp = await fetch(`${origin}/api/cron/update`, {
@@ -229,9 +305,11 @@ export async function GET(request: NextRequest) {
     log.push(`[probe] /api/cron/update returned ${updateResp.status}`);
     return NextResponse.json({
       ok: updateResp.ok,
-      changed: true,
-      current: currentGefs,
-      last: lastGefs,
+      runChanged,
+      mtdChanged,
+      mtdChanges,
+      currentGefs,
+      lastGefs,
       updateTriggered: true,
       updateStatus: updateResp.status,
       log,
@@ -243,9 +321,11 @@ export async function GET(request: NextRequest) {
     return NextResponse.json(
       {
         ok: false,
-        changed: true,
-        current: currentGefs,
-        last: lastGefs,
+        runChanged,
+        mtdChanged,
+        mtdChanges,
+        currentGefs,
+        lastGefs,
         updateTriggered: false,
         error: msg,
         log,

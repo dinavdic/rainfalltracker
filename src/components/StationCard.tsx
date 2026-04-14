@@ -213,7 +213,7 @@ export default function StationCard({
 
   // Column count for chart row colSpan
   const colCount =
-    4 + (hasForecast ? 1 : 0) + (hasKalshi ? 1 : 0) + (hasKalshi && hasForecast ? 1 : 0);
+    4 + (hasForecast ? 1 : 0) + (hasKalshi ? 2 : 0) + (hasKalshi && hasForecast ? 1 : 0);
 
   // Total volume across all thresholds for this station
   const totalVolume = hasKalshi
@@ -279,7 +279,8 @@ export default function StationCard({
             )}
             {hasKalshi && (
               <>
-                <th className="text-right pb-1 font-medium">Market</th>
+                <th className="text-right pb-1 font-medium text-[11px]">Yes</th>
+                <th className="text-right pb-1 font-medium text-[11px]">No</th>
                 {hasForecast && (
                   <th className="text-right pb-1 font-medium">Edge</th>
                 )}
@@ -398,27 +399,18 @@ export default function StationCard({
                 )}
                 {hasKalshi && (
                   <>
-                    <td className="py-1.5 text-right">
-                      {marketProb !== null ? (
+                    <td className="py-1.5 text-right text-[11px]">
+                      {kalshiPrice?.yesAsk !== null && kalshiPrice?.yesAsk !== undefined ? (
                         <>
                           <span
-                            className={`inline-block px-2 py-0.5 rounded text-xs font-semibold tabular-nums ${
-                              marketIsStale
-                                ? "bg-gray-50 text-gray-500 border border-dashed border-gray-300"
-                                : "bg-blue-50 text-blue-800"
-                            }`}
+                            className="inline-block px-1.5 py-0.5 rounded text-[11px] font-semibold tabular-nums bg-green-50 text-green-800"
                             title={
-                              marketIsStale
-                                ? `Last trade price (no active bid/ask)${change24h !== null ? ` · 24h: ${change24h > 0 ? "+" : ""}${Math.round(change24h)}c` : ""}`
-                                : change24h !== null ? `24h: ${change24h > 0 ? "+" : ""}${Math.round(change24h)}c` : undefined
+                              change24h !== null
+                                ? `24h: ${change24h > 0 ? "+" : ""}${Math.round(change24h)}c`
+                                : undefined
                             }
                           >
-                            {(() => {
-                              const pct = marketProb * 100;
-                              return pct > 0 && pct < 10
-                                ? pct.toFixed(1)
-                                : String(Math.round(pct));
-                            })()}%
+                            {Math.round(kalshiPrice.yesAsk)}&cent;
                           </span>
                           {marketIsStale && (
                             <div className="text-[9px] text-gray-400 italic mt-0.5">stale</div>
@@ -431,6 +423,15 @@ export default function StationCard({
                             </div>
                           )}
                         </>
+                      ) : (
+                        <span className="text-gray-300">&mdash;</span>
+                      )}
+                    </td>
+                    <td className="py-1.5 text-right text-[11px]">
+                      {kalshiPrice?.yesBid !== null && kalshiPrice?.yesBid !== undefined ? (
+                        <span className="inline-block px-1.5 py-0.5 rounded text-[11px] font-semibold tabular-nums bg-red-50 text-red-800">
+                          {Math.round(100 - kalshiPrice.yesBid)}&cent;
+                        </span>
                       ) : (
                         <span className="text-gray-300">&mdash;</span>
                       )}

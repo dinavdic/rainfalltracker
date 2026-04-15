@@ -7,7 +7,6 @@ import {
   EnsembleData,
   EnsoPhase,
   DayDistribution,
-  ConditionalGammaEntry,
 } from "./types";
 import { THRESHOLDS } from "./stations";
 
@@ -48,18 +47,63 @@ function getEnsoGamma(
 }
 
 /**
- * Pick the MTD-quintile gamma that matches the current MTD for today's
- * day of month, so the climatological baseline reflects "wet Aprils
- * tend to finish wet" rather than an unconditional all-years mean.
+ * Rank `mtd` against the sorted historical MTD array (ascending) and
+ * return its empirical percentile in (0, 1). Uses the same
+ * (rank - 0.5)/n convention as the Python fitter so coefficients
+ * learned during the build match evaluations here.
  *
- * Quintile buckets use [lo, hi) ranges, with the first bucket inclusive
- * of 0 and the final bucket extending past the observed max. An MTD
- * below the first bucket's lo maps to bucket 0; an MTD above the last
- * bucket's hi maps to the last bucket.
+ * Ties use the average-rank rule: a run of identical values all share
+ * the midpoint of their index range.
+ */
+function mtdPercentile(mtd: number, sortedQuantiles: number[]): number {
+  const n = sortedQuantiles.length;
+  if (n === 0) return 0.5;
+  // First index with value > mtd, and first index with value >= mtd.
+  let lo = 0;
+  let hi = n;
+  while (lo < hi) {
+    const m = (lo + hi) >>> 1;
+    if (sortedQuantiles[m] < mtd) lo = m + 1;
+    else hi = m;
+  }
+  const firstGE = lo;
+  lo = 0;
+  hi = n;
+  while (lo < hi) {
+    const m = (lo + hi) >>> 1;
+    if (sortedQuantiles[m] <= mtd) lo = m + 1;
+    else hi = m;
+  }
+  const firstGT = lo;
+  // Average rank of entries equal to mtd is (firstGE + firstGT - 1) / 2 + 1.
+  // If mtd isn't exactly present, firstGE == firstGT and we use firstGE + 0.5
+  // as the interpolated rank.
+  const avgRank =
+    firstGE === firstGT
+      ? firstGE + 0.5
+      : (firstGE + firstGT - 1) / 2 + 1;
+  const pct = (avgRank - 0.5) / n;
+  // Clamp to the open interval (0, 1) so the exponential regression
+  // can't explode at the endpoints.
+  if (pct < 0.005) return 0.005;
+  if (pct > 0.995) return 0.995;
+  return pct;
+}
+
+/**
+ * Evaluate the MTD-conditional gamma regression at the current MTD,
+ * so the climatological baseline reflects "wet Aprils tend to finish
+ * wet" rather than an unconditional all-years mean.
+ *
+ * Computes mtd_pctile by ranking the current MTD in the historical
+ * MTD distribution for today's day, then
+ *   shape = exp(a + b * pctile)
+ *   scale = exp(c + d * pctile)
+ * using the coefficients fit at build time.
  *
  * Falls back to the ENSO-conditional (or unconditional) gamma when
- * conditional_gammas is absent (e.g. day 0, or too few years) or when
- * the matched bucket's fit failed (n < 5).
+ * conditional_gamma_reg is absent (day 0, or too few years) or when
+ * the derived params are non-finite.
  */
 function getConditionalGamma(
   dayDist: DayDistribution | undefined,
@@ -67,38 +111,23 @@ function getConditionalGamma(
   ensoPhase: EnsoPhase | null,
 ): GammaParams | null {
   if (!dayDist) return null;
-  const entries: ConditionalGammaEntry[] | null | undefined =
-    dayDist.conditional_gammas;
-  if (!entries || entries.length === 0) {
+  const reg = dayDist.conditional_gamma_reg;
+  const quantiles = dayDist.mtd_quantiles;
+  if (!reg || !quantiles || quantiles.length === 0) {
     return getEnsoGamma(dayDist, ensoPhase);
   }
 
-  let match: ConditionalGammaEntry | null = null;
-  for (let i = 0; i < entries.length; i++) {
-    const e = entries[i];
-    const [lo, hi] = e.mtd_range;
-    const isLast = i === entries.length - 1;
-    if (mtd >= lo && (mtd < hi || isLast)) {
-      match = e;
-      break;
-    }
+  const pctile = mtdPercentile(mtd, quantiles);
+  const shape = Math.exp(reg.a + reg.b * pctile);
+  const scale = Math.exp(reg.c + reg.d * pctile);
+  if (!Number.isFinite(shape) || !Number.isFinite(scale) || shape <= 0 || scale <= 0) {
+    return getEnsoGamma(dayDist, ensoPhase);
   }
-  // MTD below the first bucket — clamp to bucket 0.
-  if (!match) match = entries[0];
-
-  if (
-    match.shape !== null &&
-    match.scale !== null &&
-    match.zero_fraction !== null
-  ) {
-    return {
-      shape: match.shape,
-      scale: match.scale,
-      zero_fraction: match.zero_fraction,
-    };
-  }
-  // Matched bucket has no fit — fall back.
-  return getEnsoGamma(dayDist, ensoPhase);
+  return {
+    shape,
+    scale,
+    zero_fraction: reg.zero_fraction,
+  };
 }
 
 /**

@@ -297,68 +297,97 @@ def compute_base_rates(totals_arr: np.ndarray) -> dict:
     return {str(t): round(float(np.mean(totals_arr > t)), 4) for t in THRESHOLDS}
 
 
-def fit_conditional_gammas(
+def fit_conditional_gamma_regression(
     mtd_values: list[float], remaining_values: list[float]
-) -> list[dict] | None:
-    """Bin years by MTD quintile and fit a gamma to the remaining-month
-    rainfall within each quintile.
+) -> dict | None:
+    """Fit a distributional regression of remaining-month rainfall on
+    MTD percentile:
 
-    Given parallel arrays `mtd_values[i]` = MTD through day D for year i
-    and `remaining_values[i]` = rainfall from D+1..EOM for the same year,
-    return 5 gamma fits — one per MTD quintile — so the climatological
-    anchor can reflect "wet Aprils finish wet" when the current MTD is
-    high.
+        log(shape) = a + b * mtd_pctile
+        log(scale) = c + d * mtd_pctile
 
-    Each entry: {mtd_range: [lo, hi], n, shape, scale, zero_fraction}.
-    `lo`/`hi` cover the MTD interval for that quintile; the first bucket
-    starts at 0 and the last bucket's hi is extended slightly above the
-    observed max so lookup is inclusive. Returns None if fewer than 20
-    years are available (can't form 5 buckets of ≥4 each).
+    Given parallel arrays `mtd_values[i]` (MTD through day D for year i)
+    and `remaining_values[i]` (rainfall from D+1..EOM), the per-year
+    covariate is the MTD's empirical percentile — (rank - 0.5)/n with
+    average ranks to handle ties — so the TS runtime can rank a new
+    MTD observation against the sorted historical MTDs and evaluate the
+    fit continuously, without quintile edge effects.
+
+    All four coefficients (a, b, c, d) are fit jointly by minimizing
+    the negative log-likelihood of scipy.stats.gamma on the positive
+    remaining values. Zero inflation is kept as a day-level constant
+    (zero_fraction = P(remaining == 0) across all years), consistent
+    with the unconditional gamma's treatment.
+
+    Returns `{a, b, c, d, zero_fraction}` rounded to 5 digits, or None
+    when there are too few positive observations (<20) or the
+    optimizer fails to converge.
     """
     if len(mtd_values) != len(remaining_values) or len(mtd_values) < 20:
         return None
 
-    pairs = sorted(zip(mtd_values, remaining_values), key=lambda p: p[0])
-    mtd_arr = np.array([p[0] for p in pairs])
-    rem_arr = np.array([p[1] for p in pairs])
+    from scipy.optimize import minimize
+    from scipy.stats import gamma as sgamma, rankdata
 
-    # Quintile boundaries on MTD (20/40/60/80 percentiles).
-    pct = np.percentile(mtd_arr, [20, 40, 60, 80])
+    mtd_arr = np.array(mtd_values, dtype=float)
+    rem_arr = np.array(remaining_values, dtype=float)
+    n = len(mtd_arr)
 
-    # Bucket bounds: [0, p20, p40, p60, p80, max+epsilon].
-    mtd_max = float(mtd_arr.max())
-    bounds = [0.0, float(pct[0]), float(pct[1]), float(pct[2]),
-              float(pct[3]), mtd_max + max(0.01, mtd_max * 0.001)]
+    ranks = rankdata(mtd_arr, method="average")
+    percentiles = (ranks - 0.5) / n  # in (0, 1)
 
-    # Assign every year to a bucket via searchsorted on the interior
-    # boundaries so adjacent buckets with identical MTD values (common
-    # when many years have MTD=0 early in the month) don't stay empty.
-    interior = np.array(bounds[1:-1])
-    bucket_idx = np.searchsorted(interior, mtd_arr, side="right")
+    pos_mask = rem_arr > 0
+    n_pos = int(pos_mask.sum())
+    if n_pos < 20:
+        return None
+    pos_rem = rem_arr[pos_mask]
+    pos_pct = percentiles[pos_mask]
+    zero_fraction = float(1.0 - n_pos / n)
 
-    entries: list[dict] = []
-    for b in range(5):
-        lo = bounds[b]
-        hi = bounds[b + 1]
-        mask = bucket_idx == b
-        rem_in_bucket = rem_arr[mask]
-        gamma = fit_gamma(rem_in_bucket) if len(rem_in_bucket) >= 5 else None
-        entries.append({
-            "mtd_range": [round(lo, 4), round(hi, 4)],
-            "n": int(mask.sum()),
-            "shape": gamma["shape"] if gamma else None,
-            "scale": gamma["scale"] if gamma else None,
-            "zero_fraction": gamma["zero_fraction"] if gamma else None,
-        })
+    def nll(params: np.ndarray) -> float:
+        a, b, c, d = params
+        log_shape = np.clip(a + b * pos_pct, -15.0, 15.0)
+        log_scale = np.clip(c + d * pos_pct, -15.0, 15.0)
+        shape = np.exp(log_shape)
+        scale = np.exp(log_scale)
+        logpdf = sgamma.logpdf(pos_rem, shape, loc=0.0, scale=scale)
+        if not np.all(np.isfinite(logpdf)):
+            return 1e12
+        return float(-logpdf.sum())
 
-    # If more than half the buckets are empty (e.g. early-month days
-    # where most years have MTD=0), the quintile split is meaningless —
-    # fall back to the unconditional gamma.
-    empty_buckets = sum(1 for e in entries if e["shape"] is None)
-    if empty_buckets >= 3:
+    # Warm-start from the unconditional MLE so Nelder-Mead converges fast.
+    try:
+        u_shape, _, u_scale = sgamma.fit(pos_rem, floc=0)
+        if not (math.isfinite(u_shape) and math.isfinite(u_scale)
+                and u_shape > 0 and u_scale > 0):
+            raise ValueError("bad warm-start")
+        x0 = np.array([math.log(u_shape), 0.0, math.log(u_scale), 0.0])
+    except Exception:
+        x0 = np.array([0.0, 0.0, 0.0, 0.0])
+
+    try:
+        res = minimize(
+            nll,
+            x0,
+            method="Nelder-Mead",
+            options={"maxiter": 5000, "xatol": 1e-6, "fatol": 1e-6},
+        )
+    except Exception:
+        return None
+    if not res.success:
         return None
 
-    return entries
+    a, b, c, d = (float(v) for v in res.x)
+    if not all(math.isfinite(v) for v in (a, b, c, d)):
+        return None
+
+    return {
+        "a": round(a, 5),
+        "b": round(b, 5),
+        "c": round(c, 5),
+        "d": round(d, 5),
+        "zero_fraction": round(zero_fraction, 4),
+    }
 
 
 def compute_distributions(monthly_data: dict, enso_years: dict[int, str]) -> dict:
@@ -433,15 +462,22 @@ def compute_distributions(monthly_data: dict, enso_years: dict[int, str]) -> dic
                     fit_gamma(np.array(phase_remaining)) if phase_remaining else None
                 )
 
-            # MTD-quintile conditional gammas (day 0 is always MTD=0, so
-            # skip — quintiles are degenerate).
-            conditional_gammas = None
+            # Continuous MTD-conditional gamma regression
+            # (log-shape / log-scale linear in MTD percentile). Day 0
+            # is always MTD=0, so the regression collapses — skip.
+            conditional_gamma_reg: dict | None = None
+            mtd_quantiles: list[float] | None = None
             if current_day >= 1:
                 mtd_values = [
                     sum(monthly_data[(y, m)].get(d, 0.0) for d in range(1, current_day + 1))
                     for (y, m) in year_months
                 ]
-                conditional_gammas = fit_conditional_gammas(mtd_values, remaining_values)
+                conditional_gamma_reg = fit_conditional_gamma_regression(
+                    mtd_values, remaining_values
+                )
+                # Sorted historical MTDs so the TS runtime can rank the
+                # current MTD and derive its empirical percentile.
+                mtd_quantiles = [round(float(v), 3) for v in sorted(mtd_values)]
 
             days_result[str(current_day)] = {
                 "percentiles": percentiles,
@@ -449,7 +485,8 @@ def compute_distributions(monthly_data: dict, enso_years: dict[int, str]) -> dic
                 "gamma_nino": enso_gamma.get("nino"),
                 "gamma_nina": enso_gamma.get("nina"),
                 "gamma_neutral": enso_gamma.get("neutral"),
-                "conditional_gammas": conditional_gammas,
+                "conditional_gamma_reg": conditional_gamma_reg,
+                "mtd_quantiles": mtd_quantiles,
                 "n_years": len(remaining_values),
                 "mean": round(float(np.mean(remaining_arr)), 3),
             }

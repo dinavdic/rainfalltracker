@@ -22,15 +22,17 @@ export interface GammaParams {
 
 export type EnsoPhase = "nino" | "nina" | "neutral";
 
-export interface ConditionalGammaEntry {
-  // [lo, hi] MTD interval covered by this quintile bucket, inclusive lo,
-  // exclusive hi (the final bucket extends slightly past the observed max
-  // so lookups at extreme MTD still resolve).
-  mtd_range: [number, number];
-  n: number;
-  shape: number | null;
-  scale: number | null;
-  zero_fraction: number | null;
+export interface ConditionalGammaRegression {
+  // Distributional regression coefficients:
+  //   log(shape) = a + b * mtd_pctile
+  //   log(scale) = c + d * mtd_pctile
+  // where mtd_pctile is the rank of the current MTD in the historical
+  // MTD distribution for this (month, day), mapped to (0, 1).
+  a: number;
+  b: number;
+  c: number;
+  d: number;
+  zero_fraction: number;
 }
 
 export interface DayDistribution {
@@ -39,10 +41,13 @@ export interface DayDistribution {
   gamma_nino: GammaParams | null;
   gamma_nina: GammaParams | null;
   gamma_neutral: GammaParams | null;
-  // Up to 5 entries (one per MTD quintile) for day_of_month >= 1.
-  // Null/absent when too few years to bucket meaningfully (e.g. early
-  // days where most years have MTD=0).
-  conditional_gammas?: ConditionalGammaEntry[] | null;
+  // Fit coefficients for the MTD-conditional gamma regression. Null/
+  // absent on day 0 (MTD is always zero) or when the optimizer fails.
+  conditional_gamma_reg?: ConditionalGammaRegression | null;
+  // Sorted ascending historical MTD values through this day-of-month
+  // (one per historical year). Used at runtime to rank the current
+  // MTD and compute its empirical percentile for the regression.
+  mtd_quantiles?: number[] | null;
   n_years: number;
   mean: number;
 }

@@ -7,6 +7,7 @@ import {
   EnsembleData,
   EnsoPhase,
   DayDistribution,
+  ConditionalGammaEntry,
 } from "./types";
 import { THRESHOLDS } from "./stations";
 
@@ -44,6 +45,60 @@ function getEnsoGamma(
   const ensoGamma = dayDist[ensoKey] as GammaParams | null;
   // Fall back to unconditional if ENSO-conditional gamma is null (too few years)
   return ensoGamma ?? dayDist.gamma;
+}
+
+/**
+ * Pick the MTD-quintile gamma that matches the current MTD for today's
+ * day of month, so the climatological baseline reflects "wet Aprils
+ * tend to finish wet" rather than an unconditional all-years mean.
+ *
+ * Quintile buckets use [lo, hi) ranges, with the first bucket inclusive
+ * of 0 and the final bucket extending past the observed max. An MTD
+ * below the first bucket's lo maps to bucket 0; an MTD above the last
+ * bucket's hi maps to the last bucket.
+ *
+ * Falls back to the ENSO-conditional (or unconditional) gamma when
+ * conditional_gammas is absent (e.g. day 0, or too few years) or when
+ * the matched bucket's fit failed (n < 5).
+ */
+function getConditionalGamma(
+  dayDist: DayDistribution | undefined,
+  mtd: number,
+  ensoPhase: EnsoPhase | null,
+): GammaParams | null {
+  if (!dayDist) return null;
+  const entries: ConditionalGammaEntry[] | null | undefined =
+    dayDist.conditional_gammas;
+  if (!entries || entries.length === 0) {
+    return getEnsoGamma(dayDist, ensoPhase);
+  }
+
+  let match: ConditionalGammaEntry | null = null;
+  for (let i = 0; i < entries.length; i++) {
+    const e = entries[i];
+    const [lo, hi] = e.mtd_range;
+    const isLast = i === entries.length - 1;
+    if (mtd >= lo && (mtd < hi || isLast)) {
+      match = e;
+      break;
+    }
+  }
+  // MTD below the first bucket — clamp to bucket 0.
+  if (!match) match = entries[0];
+
+  if (
+    match.shape !== null &&
+    match.scale !== null &&
+    match.zero_fraction !== null
+  ) {
+    return {
+      shape: match.shape,
+      scale: match.scale,
+      zero_fraction: match.zero_fraction,
+    };
+  }
+  // Matched bucket has no fit — fall back.
+  return getEnsoGamma(dayDist, ensoPhase);
 }
 
 /**
@@ -173,11 +228,18 @@ export function computeProbabilities(
       };
     }
 
-    // --- Pure climatology probability (ENSO-conditional) ---
+    // --- Pure climatology probability (MTD-quintile + ENSO conditional) ---
+    //
+    // Prefer the MTD-quintile gamma for today's day: when MTD is running
+    // in the top quintile, "wet Aprils tend to finish wet" shifts the
+    // anchor upward (and the opposite on the low end), so the
+    // skill-weighted blend no longer regresses to the unconditional mean
+    // at long lead times. Falls back to the ENSO-conditional (then
+    // unconditional) gamma when conditional_gammas isn't available.
     let climatologyProbability = 0;
     const dayKey = String(dayOfMonth);
     const dayDist = monthData?.days[dayKey];
-    const gamma = getEnsoGamma(dayDist, ensoPhase);
+    const gamma = getConditionalGamma(dayDist, mtd, ensoPhase);
 
     if (gamma) {
       climatologyProbability = gammaSurvival(remainingNeeded, gamma);

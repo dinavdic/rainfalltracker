@@ -53,6 +53,10 @@ STATIONS = {
 # --- Constants --------------------------------------------------------------
 
 GHCND_BASE = "https://www.ncei.noaa.gov/pub/data/ghcn/daily/all"
+# NOAA's AWS public dataset mirror. Same station data, different file
+# format (one CSV row per observation vs. the fixed-width .dly block
+# layout). Used as a fallback when the NCEI host is unreachable.
+GHCND_S3_BASE = "https://noaa-ghcn-pds.s3.amazonaws.com/csv.gz/by_station"
 SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
 REPO_ROOT = os.path.abspath(os.path.join(SCRIPT_DIR, ".."))
 CACHE_DIR = os.path.join(SCRIPT_DIR, ".ghcnd-cache")
@@ -80,35 +84,105 @@ def ghcnd_cache_path(station_id: str) -> str:
     return os.path.join(CACHE_DIR, f"{station_id}.dly")
 
 
-def download_ghcnd(station_id: str) -> str:
-    """Download the station's .dly file (cached). Returns local path."""
-    dst = ghcnd_cache_path(station_id)
-    if os.path.exists(dst) and os.path.getsize(dst) > 0:
-        return dst
+def ghcnd_csv_cache_path(station_id: str) -> str:
+    return os.path.join(CACHE_DIR, f"{station_id}.csv.gz")
 
-    os.makedirs(CACHE_DIR, exist_ok=True)
-    url = f"{GHCND_BASE}/{station_id}.dly"
 
+def _http_get(url: str, timeout: int = 120) -> bytes:
+    """GET with up-to-5 retries and exponential backoff. Raises on final failure."""
     last_err: Exception | None = None
     for attempt in range(5):
         try:
             req = Request(url, headers={"User-Agent": USER_AGENT})
-            with urlopen(req, timeout=120) as resp:
+            with urlopen(req, timeout=timeout) as resp:
                 data = resp.read()
             if not data:
                 raise RuntimeError("empty response body")
-            tmp = dst + ".part"
-            with open(tmp, "wb") as f:
-                f.write(data)
-            os.replace(tmp, dst)
-            return dst
+            return data
         except (URLError, HTTPError, TimeoutError, RuntimeError) as e:
             last_err = e
             wait = 2 ** (attempt + 1)
             print(f"    Attempt {attempt+1} failed ({e}); retrying in {wait}s…")
             time.sleep(wait)
-
     raise RuntimeError(f"Failed to download {url}: {last_err}")
+
+
+def download_ghcnd(station_id: str) -> tuple[str, str]:
+    """Download the station's record. Returns (local_path, format) where
+    format is "dly" or "csv". Tries the NCEI .dly endpoint first (the
+    canonical archive layout), falling back to NOAA's AWS S3 CSV mirror
+    (noaa-ghcn-pds) when NCEI is unreachable — same data, different
+    serialization. Cached under scripts/.ghcnd-cache/.
+    """
+    os.makedirs(CACHE_DIR, exist_ok=True)
+
+    dly_dst = ghcnd_cache_path(station_id)
+    if os.path.exists(dly_dst) and os.path.getsize(dly_dst) > 0:
+        return dly_dst, "dly"
+
+    csv_dst = ghcnd_csv_cache_path(station_id)
+    if os.path.exists(csv_dst) and os.path.getsize(csv_dst) > 0:
+        return csv_dst, "csv"
+
+    # Try NCEI .dly first.
+    try:
+        data = _http_get(f"{GHCND_BASE}/{station_id}.dly")
+        tmp = dly_dst + ".part"
+        with open(tmp, "wb") as f:
+            f.write(data)
+        os.replace(tmp, dly_dst)
+        return dly_dst, "dly"
+    except RuntimeError as e:
+        print(f"    NCEI .dly fetch failed: {e}; trying S3 CSV mirror…")
+
+    # Fall back to NOAA's S3 CSV mirror.
+    data = _http_get(f"{GHCND_S3_BASE}/{station_id}.csv.gz")
+    tmp = csv_dst + ".part"
+    with open(tmp, "wb") as f:
+        f.write(data)
+    os.replace(tmp, csv_dst)
+    return csv_dst, "csv"
+
+
+def parse_ghcnd_csv_gz(path: str) -> list[dict]:
+    """Parse NOAA's S3-hosted per-station CSV.gz and return PRCP records
+    as [{year, month, day, prcp (inches)}].
+
+    Row schema (no header): STATION,DATE(YYYYMMDD),ELEMENT,VALUE,MFLAG,
+    QFLAG,SFLAG,OBSTIME. PRCP units are tenths of mm → inches = value /
+    254. Drops rows with non-blank QFLAG (failed QC) or VALUE == -9999.
+    """
+    import gzip
+
+    records: list[dict] = []
+    with gzip.open(path, "rt") as f:
+        for line in f:
+            parts = line.rstrip("\n").split(",")
+            if len(parts) < 7:
+                continue
+            _sid, date_str, element, value_str, _mflag, qflag, _sflag = parts[:7]
+            if element != "PRCP":
+                continue
+            if qflag and qflag.strip() != "":
+                continue
+            if len(date_str) != 8:
+                continue
+            try:
+                year = int(date_str[:4])
+                month = int(date_str[4:6])
+                day = int(date_str[6:8])
+                val = int(value_str)
+            except ValueError:
+                continue
+            if month < 1 or month > 12 or day < 1 or day > 31:
+                continue
+            if val == -9999:
+                continue
+            if day > DAYS_IN_MONTH[month] and not (month == 2 and day == 29):
+                continue
+            prcp_in = max(0.0, val / 254.0)
+            records.append({"year": year, "month": month, "day": day, "prcp": prcp_in})
+    return records
 
 
 def parse_ghcnd_dly(path: str) -> list[dict]:
@@ -176,10 +250,10 @@ def parse_ghcnd_dly(path: str) -> list[dict]:
 
 
 def fetch_ghcnd_station(station_id: str) -> list[dict]:
-    path = download_ghcnd(station_id)
+    path, fmt = download_ghcnd(station_id)
     size_mb = os.path.getsize(path) / (1024 * 1024)
-    print(f"    downloaded/cached {station_id}.dly ({size_mb:.1f} MB)")
-    records = parse_ghcnd_dly(path)
+    print(f"    downloaded/cached {os.path.basename(path)} ({size_mb:.1f} MB, format={fmt})")
+    records = parse_ghcnd_dly(path) if fmt == "dly" else parse_ghcnd_csv_gz(path)
     years = sorted({r["year"] for r in records})
     if years:
         print(
@@ -221,6 +295,70 @@ def fit_gamma(values_arr: np.ndarray) -> dict | None:
 
 def compute_base_rates(totals_arr: np.ndarray) -> dict:
     return {str(t): round(float(np.mean(totals_arr > t)), 4) for t in THRESHOLDS}
+
+
+def fit_conditional_gammas(
+    mtd_values: list[float], remaining_values: list[float]
+) -> list[dict] | None:
+    """Bin years by MTD quintile and fit a gamma to the remaining-month
+    rainfall within each quintile.
+
+    Given parallel arrays `mtd_values[i]` = MTD through day D for year i
+    and `remaining_values[i]` = rainfall from D+1..EOM for the same year,
+    return 5 gamma fits — one per MTD quintile — so the climatological
+    anchor can reflect "wet Aprils finish wet" when the current MTD is
+    high.
+
+    Each entry: {mtd_range: [lo, hi], n, shape, scale, zero_fraction}.
+    `lo`/`hi` cover the MTD interval for that quintile; the first bucket
+    starts at 0 and the last bucket's hi is extended slightly above the
+    observed max so lookup is inclusive. Returns None if fewer than 20
+    years are available (can't form 5 buckets of ≥4 each).
+    """
+    if len(mtd_values) != len(remaining_values) or len(mtd_values) < 20:
+        return None
+
+    pairs = sorted(zip(mtd_values, remaining_values), key=lambda p: p[0])
+    mtd_arr = np.array([p[0] for p in pairs])
+    rem_arr = np.array([p[1] for p in pairs])
+
+    # Quintile boundaries on MTD (20/40/60/80 percentiles).
+    pct = np.percentile(mtd_arr, [20, 40, 60, 80])
+
+    # Bucket bounds: [0, p20, p40, p60, p80, max+epsilon].
+    mtd_max = float(mtd_arr.max())
+    bounds = [0.0, float(pct[0]), float(pct[1]), float(pct[2]),
+              float(pct[3]), mtd_max + max(0.01, mtd_max * 0.001)]
+
+    # Assign every year to a bucket via searchsorted on the interior
+    # boundaries so adjacent buckets with identical MTD values (common
+    # when many years have MTD=0 early in the month) don't stay empty.
+    interior = np.array(bounds[1:-1])
+    bucket_idx = np.searchsorted(interior, mtd_arr, side="right")
+
+    entries: list[dict] = []
+    for b in range(5):
+        lo = bounds[b]
+        hi = bounds[b + 1]
+        mask = bucket_idx == b
+        rem_in_bucket = rem_arr[mask]
+        gamma = fit_gamma(rem_in_bucket) if len(rem_in_bucket) >= 5 else None
+        entries.append({
+            "mtd_range": [round(lo, 4), round(hi, 4)],
+            "n": int(mask.sum()),
+            "shape": gamma["shape"] if gamma else None,
+            "scale": gamma["scale"] if gamma else None,
+            "zero_fraction": gamma["zero_fraction"] if gamma else None,
+        })
+
+    # If more than half the buckets are empty (e.g. early-month days
+    # where most years have MTD=0), the quintile split is meaningless —
+    # fall back to the unconditional gamma.
+    empty_buckets = sum(1 for e in entries if e["shape"] is None)
+    if empty_buckets >= 3:
+        return None
+
+    return entries
 
 
 def compute_distributions(monthly_data: dict, enso_years: dict[int, str]) -> dict:
@@ -295,12 +433,23 @@ def compute_distributions(monthly_data: dict, enso_years: dict[int, str]) -> dic
                     fit_gamma(np.array(phase_remaining)) if phase_remaining else None
                 )
 
+            # MTD-quintile conditional gammas (day 0 is always MTD=0, so
+            # skip — quintiles are degenerate).
+            conditional_gammas = None
+            if current_day >= 1:
+                mtd_values = [
+                    sum(monthly_data[(y, m)].get(d, 0.0) for d in range(1, current_day + 1))
+                    for (y, m) in year_months
+                ]
+                conditional_gammas = fit_conditional_gammas(mtd_values, remaining_values)
+
             days_result[str(current_day)] = {
                 "percentiles": percentiles,
                 "gamma": gamma_params,
                 "gamma_nino": enso_gamma.get("nino"),
                 "gamma_nina": enso_gamma.get("nina"),
                 "gamma_neutral": enso_gamma.get("neutral"),
+                "conditional_gammas": conditional_gammas,
                 "n_years": len(remaining_values),
                 "mean": round(float(np.mean(remaining_arr)), 3),
             }

@@ -22,12 +22,27 @@ export interface GammaParams {
 
 export type EnsoPhase = "nino" | "nina" | "neutral";
 
+export interface ConditionalGammaEntry {
+  // [lo, hi] MTD interval covered by this quintile bucket, inclusive lo,
+  // exclusive hi (the final bucket extends slightly past the observed max
+  // so lookups at extreme MTD still resolve).
+  mtd_range: [number, number];
+  n: number;
+  shape: number | null;
+  scale: number | null;
+  zero_fraction: number | null;
+}
+
 export interface DayDistribution {
   percentiles: Record<string, number>;
   gamma: GammaParams | null;
   gamma_nino: GammaParams | null;
   gamma_nina: GammaParams | null;
   gamma_neutral: GammaParams | null;
+  // Up to 5 entries (one per MTD quintile) for day_of_month >= 1.
+  // Null/absent when too few years to bucket meaningfully (e.g. early
+  // days where most years have MTD=0).
+  conditional_gammas?: ConditionalGammaEntry[] | null;
   n_years: number;
   mean: number;
 }

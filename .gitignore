@@ -40,3 +40,7 @@ next-env.d.ts
 
 # python
 __pycache__/
+
+# local caches for offline script reruns (multi-MB each)
+/scripts/.ghcnd-cache/
+/scripts/.reforecast-cache/

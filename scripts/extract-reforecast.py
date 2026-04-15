@@ -34,6 +34,7 @@ Requires: xarray, cfgrib (+ eccodes C library), s3fs.
 import argparse
 import json
 import os
+import shutil
 import sys
 import tempfile
 import time
@@ -258,13 +259,20 @@ def process_issue_date(issue_date: date, stations: list[dict]) -> int:
                 continue
 
             try:
-                # indexpath='' disables sidecar .idx file caching, which
-                # keeps temp dirs self-contained and avoids permission
-                # issues in sandboxed environments.
+                # GEFSv12 perturbed-member GRIB2 files contain messages
+                # with both the control and perturbed dataType tagged, so
+                # cfgrib raises "multiple values for unique key" unless
+                # we disambiguate. Control runs use dataType='cf' and
+                # perturbed members use 'pf'. indexpath='' disables the
+                # sidecar .idx file so temp dirs stay self-contained.
+                data_type = "cf" if member == "c00" else "pf"
                 ds = xr.open_dataset(
                     local,
                     engine="cfgrib",
-                    backend_kwargs={"indexpath": ""},
+                    backend_kwargs={
+                        "filter_by_keys": {"dataType": data_type},
+                        "indexpath": "",
+                    },
                 )
             except Exception as e:
                 print(f"  [warn] {member} open failed: {e}", file=sys.stderr)
@@ -315,7 +323,16 @@ def main() -> int:
         type=int,
         help="Only process a single year. Default: every year 2000-2019.",
     )
+    ap.add_argument(
+        "--clear-cache",
+        action="store_true",
+        help="Delete the entire .reforecast-cache directory before running.",
+    )
     args = ap.parse_args()
+
+    if args.clear_cache and os.path.isdir(CACHE_DIR):
+        print(f"Clearing cache at {CACHE_DIR}…", flush=True)
+        shutil.rmtree(CACHE_DIR)
 
     _check_deps()
 

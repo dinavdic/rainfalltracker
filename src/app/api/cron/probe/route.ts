@@ -11,6 +11,7 @@ import {
   loadServerSnapshots,
   saveServerSnapshot,
 } from "@/lib/snapshot-store";
+import { fetchKalshiDirect } from "@/lib/kalshi-fetcher";
 
 export const dynamic = "force-dynamic";
 export const maxDuration = 60;
@@ -292,141 +293,150 @@ export async function GET(request: NextRequest) {
     );
   }
 
-  // --- 3. Fire full update if either signal detected new data;
-  //        otherwise save a price-only snapshot so we capture Kalshi
-  //        price observations at the probe cadence. ---
-  if (!runChanged && !mtdChanged) {
-    const origin = request.nextUrl.origin;
-    let priceSnapshotSaved = false;
-    let priceSnapshotError: string | undefined;
+  // --- 3. Always save a snapshot every probe run for volatility analysis.
+  //        If new model run or MTD detected, also trigger a full update. ---
+  let snapshotSaved = false;
+  let snapshotError: string | undefined;
 
+  try {
+    // Fetch fresh Kalshi prices directly (avoids 401 from internal HTTP).
+    let kalshi: KalshiApiResponse | null = null;
     try {
-      // Fetch fresh Kalshi prices.
-      const kalshiResp = await fetch(`${origin}/api/fetch-kalshi`, {
-        signal: AbortSignal.timeout(20000),
-      });
-      if (!kalshiResp.ok) {
-        throw new Error(
-          `/api/fetch-kalshi returned ${kalshiResp.status} ${kalshiResp.statusText}`,
-        );
-      }
-      const kalshi = (await kalshiResp.json()) as KalshiApiResponse;
-
-      // Load the most recent snapshot for ensemble probs to carry forward.
-      // limit=1 avoids fetching the full history — we only need the latest.
-      const history = await loadServerSnapshots(1);
-      const latest = history.length > 0 ? history[0] : null;
-
-      if (!latest) {
-        const line = `[probe] No prior snapshot to carry forward; skipping price-only snapshot`;
-        console.log(line);
-        log.push(line);
-      } else {
-        const stations: Record<string, StationSnapshot> = {};
-        for (const [code, prevStation] of Object.entries(latest.stations)) {
-          // Carry forward all ensemble fields from the latest snapshot.
-          const next: StationSnapshot = {
-            ...prevStation,
-            thresholds: { ...prevStation.thresholds },
-          };
-
-          // Overwrite kalshiPrices with current mid-prices.
-          const kalshiStation = kalshi.stations?.[code];
-          if (kalshiStation) {
-            const prices: Record<string, number> = {};
-            for (const [thresh, mkt] of Object.entries(
-              kalshiStation.thresholds,
-            )) {
-              let mid: number | null = null;
-              if (mkt.yesBid !== null && mkt.yesAsk !== null) {
-                mid = (mkt.yesBid + mkt.yesAsk) / 2;
-              } else if (mkt.lastPrice !== null) {
-                mid = mkt.lastPrice;
-              }
-              if (mid !== null) {
-                prices[thresh] = Math.round(mid * 100) / 100;
-              }
-            }
-            if (Object.keys(prices).length > 0) {
-              next.kalshiPrices = prices;
-            } else {
-              delete next.kalshiPrices;
-            }
-          }
-
-          stations[code] = next;
-        }
-
-        const snapshot: ForecastSnapshot = {
-          timestamp: nowIso,
-          stations,
-        };
-        await saveServerSnapshot(snapshot);
-        priceSnapshotSaved = true;
-        const line = `[probe] Price snapshot saved (no model/MTD change)`;
-        console.log(line);
-        log.push(line);
-      }
+      kalshi = await fetchKalshiDirect();
     } catch (e) {
-      priceSnapshotError = e instanceof Error ? e.message : String(e);
-      const line = `[probe] Price snapshot failed: ${priceSnapshotError}`;
+      const msg = e instanceof Error ? e.message : String(e);
+      const line = `[probe] Kalshi direct fetch failed: ${msg}`;
       console.warn(line);
       log.push(line);
     }
 
-    return NextResponse.json({
-      ok: true,
-      runChanged,
-      mtdChanged,
-      currentGefs,
-      lastGefs,
-      priceSnapshotSaved,
-      priceSnapshotError,
-      log,
-      elapsedMs: Date.now() - startMs,
-    });
+    // Load the most recent snapshot for ensemble probs to carry forward.
+    const history = await loadServerSnapshots(1);
+    const latest = history.length > 0 ? history[0] : null;
+
+    if (!latest) {
+      const line = `[probe] No prior snapshot to carry forward; skipping snapshot save`;
+      console.log(line);
+      log.push(line);
+    } else {
+      const stations: Record<string, StationSnapshot> = {};
+      for (const [code, prevStation] of Object.entries(latest.stations)) {
+        // Carry forward all ensemble fields from the latest snapshot.
+        const next: StationSnapshot = {
+          ...prevStation,
+          thresholds: { ...prevStation.thresholds },
+        };
+
+        // Update MTD from fresh NWS CLI data if available.
+        const freshMtd = mtdUpdatedState[code];
+        if (freshMtd) {
+          next.mtd = freshMtd.mtd;
+        }
+
+        // Overwrite kalshiPrices with current mid-prices.
+        const kalshiStation = kalshi?.stations?.[code];
+        if (kalshiStation) {
+          const prices: Record<string, number> = {};
+          for (const [thresh, mkt] of Object.entries(
+            kalshiStation.thresholds,
+          )) {
+            let mid: number | null = null;
+            if (mkt.yesBid !== null && mkt.yesAsk !== null) {
+              mid = (mkt.yesBid + mkt.yesAsk) / 2;
+            } else if (mkt.lastPrice !== null) {
+              mid = mkt.lastPrice;
+            }
+            if (mid !== null) {
+              prices[thresh] = Math.round(mid * 100) / 100;
+            }
+          }
+          if (Object.keys(prices).length > 0) {
+            next.kalshiPrices = prices;
+          } else {
+            delete next.kalshiPrices;
+          }
+        }
+
+        stations[code] = next;
+      }
+
+      const snapshot: ForecastSnapshot = {
+        timestamp: nowIso,
+        stations,
+      };
+      await saveServerSnapshot(snapshot);
+      snapshotSaved = true;
+      const triggerDesc = runChanged || mtdChanged ? "change detected" : "no change trigger";
+      const line = `[probe] Snapshot saved (${triggerDesc})`;
+      console.log(line);
+      log.push(line);
+    }
+  } catch (e) {
+    snapshotError = e instanceof Error ? e.message : String(e);
+    const line = `[probe] Snapshot save failed: ${snapshotError}`;
+    console.warn(line);
+    log.push(line);
   }
 
-  const fullTriggerLine = `[probe] Full update triggered`;
-  console.log(fullTriggerLine);
-  log.push(fullTriggerLine);
+  // --- 4. If new data detected, also trigger a full update. ---
+  if (runChanged || mtdChanged) {
+    const fullTriggerLine = `[probe] Full update triggered`;
+    console.log(fullTriggerLine);
+    log.push(fullTriggerLine);
 
-  try {
-    const origin = request.nextUrl.origin;
-    const updateResp = await fetch(`${origin}/api/cron/update`, {
-      headers: { authorization: `Bearer ${secret}` },
-      signal: AbortSignal.timeout(120000),
-    });
-    log.push(`[probe] /api/cron/update returned ${updateResp.status}`);
-    return NextResponse.json({
-      ok: updateResp.ok,
-      runChanged,
-      mtdChanged,
-      mtdChanges,
-      currentGefs,
-      lastGefs,
-      updateTriggered: true,
-      updateStatus: updateResp.status,
-      log,
-      elapsedMs: Date.now() - startMs,
-    });
-  } catch (e) {
-    const msg = e instanceof Error ? e.message : String(e);
-    log.push(`[probe] update trigger failed: ${msg}`);
-    return NextResponse.json(
-      {
-        ok: false,
+    try {
+      const origin = request.nextUrl.origin;
+      const updateResp = await fetch(`${origin}/api/cron/update`, {
+        headers: { authorization: `Bearer ${secret}` },
+        signal: AbortSignal.timeout(120000),
+      });
+      log.push(`[probe] /api/cron/update returned ${updateResp.status}`);
+      return NextResponse.json({
+        ok: updateResp.ok,
         runChanged,
         mtdChanged,
         mtdChanges,
         currentGefs,
         lastGefs,
-        updateTriggered: false,
-        error: msg,
+        snapshotSaved,
+        snapshotError,
+        updateTriggered: true,
+        updateStatus: updateResp.status,
         log,
         elapsedMs: Date.now() - startMs,
-      },
-      { status: 500 },
-    );
+      });
+    } catch (e) {
+      const msg = e instanceof Error ? e.message : String(e);
+      log.push(`[probe] update trigger failed: ${msg}`);
+      return NextResponse.json(
+        {
+          ok: false,
+          runChanged,
+          mtdChanged,
+          mtdChanges,
+          currentGefs,
+          lastGefs,
+          snapshotSaved,
+          snapshotError,
+          updateTriggered: false,
+          error: msg,
+          log,
+          elapsedMs: Date.now() - startMs,
+        },
+        { status: 500 },
+      );
+    }
   }
+
+  return NextResponse.json({
+    ok: true,
+    runChanged,
+    mtdChanged,
+    currentGefs,
+    lastGefs,
+    snapshotSaved,
+    snapshotError,
+    log,
+    elapsedMs: Date.now() - startMs,
+  });
 }

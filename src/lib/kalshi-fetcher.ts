@@ -24,6 +24,8 @@ interface KalshiMarket {
   status: string;
   yes_bid_dollars?: string;
   yes_ask_dollars?: string;
+  no_bid_dollars?: string;
+  no_ask_dollars?: string;
   last_price_dollars?: string;
   volume_fp?: string;
   volume_24h_fp?: string;
@@ -37,6 +39,11 @@ interface KalshiMarketsResponse {
   cursor?: string;
 }
 
+/**
+ * Parse a Kalshi dollar-string to cents. Returns null for missing,
+ * empty, non-numeric, or non-positive values — zero means "no real
+ * bid" which is indistinguishable from missing for our purposes.
+ */
 function dollarsToCents(dollars: string | undefined | null): number | null {
   if (!dollars) return null;
   const val = parseFloat(dollars);
@@ -54,17 +61,6 @@ function parseVolume(fp: string | undefined | null): number {
 let lastKalshiRequest = 0;
 const KALSHI_MIN_DELAY_MS = 250;
 const KALSHI_OB_DELAY_MS = 100;
-
-// Per-ticker record of the most recent orderbook bid/ask we saw.
-const lastOrderbookValues = new Map<
-  string,
-  {
-    yesBid: number | null;
-    yesAsk: number | null;
-    noBid: number | null;
-    noAsk: number | null;
-  }
->();
 
 async function kalshiFetch(
   path: string,
@@ -312,11 +308,35 @@ export async function discoverAndFetchMarkets(
 
       const thresholdKey = matchedThreshold.toFixed(1);
 
-      const yesBid = dollarsToCents(market.yes_bid_dollars);
-      const yesAsk = dollarsToCents(market.yes_ask_dollars);
+      // Parse all four sides independently from the /markets response.
+      let yesBid = dollarsToCents(market.yes_bid_dollars);
+      let yesAsk = dollarsToCents(market.yes_ask_dollars);
+      let noBid = dollarsToCents(market.no_bid_dollars);
+      let noAsk = dollarsToCents(market.no_ask_dollars);
       const lastPrice = dollarsToCents(market.last_price_dollars);
       const volume = parseVolume(market.volume_fp);
+
+      // Fill gaps via Kalshi's YES/NO pricing identity:
+      //   yesAsk = 100 - noBid, noAsk = 100 - yesBid, and vice versa.
+      if (yesBid === null && noAsk !== null) yesBid = 100 - noAsk;
+      if (yesAsk === null && noBid !== null) yesAsk = 100 - noBid;
+      if (noBid === null && yesAsk !== null) noBid = 100 - yesAsk;
+      if (noAsk === null && yesBid !== null) noAsk = 100 - yesBid;
+
+      // Only fall back to lastPrice when the YES side has neither a
+      // bid nor an ask — truly empty book.
+      if (yesBid === null && yesAsk === null && lastPrice !== null) {
+        yesBid = lastPrice;
+        yesAsk = lastPrice;
+        noBid = 100 - lastPrice;
+        noAsk = 100 - lastPrice;
+      }
+
       const isStale = yesBid === null || yesAsk === null;
+
+      log.push(
+        `[kalshi] ${market.ticker}: yb=${yesBid} ya=${yesAsk} nb=${noBid} na=${noAsk}`
+      );
 
       if (station === "SFO" && !sfoLogged) {
         sfoLogged = true;
@@ -332,12 +352,10 @@ export async function discoverAndFetchMarkets(
         log.push(
           `[kalshi] SFO price debug (${market.ticker}): ` +
             `raw=${JSON.stringify(priceFields)} ` +
-            `parsed: bid=${yesBid}c ask=${yesAsk}c last=${lastPrice}c isStale=${isStale}`
+            `parsed: yb=${yesBid}c ya=${yesAsk}c nb=${noBid}c na=${noAsk}c ` +
+            `last=${lastPrice}c isStale=${isStale}`
         );
       }
-
-      const noBid = yesAsk !== null ? 100 - yesAsk : null;
-      const noAsk = yesBid !== null ? 100 - yesBid : null;
 
       const price: KalshiMarketPrice = {
         ticker: market.ticker,
@@ -487,43 +505,36 @@ export async function discoverAndFetchMarkets(
           const oldBid = price.yesBid;
           const oldAsk = price.yesAsk;
 
-          const prevOb = lastOrderbookValues.get(price.ticker);
-          const unchanged =
-            prevOb !== undefined &&
-            prevOb.yesBid === ob.yesBid &&
-            prevOb.yesAsk === ob.yesAsk &&
-            prevOb.noBid === ob.noBid &&
-            prevOb.noAsk === ob.noAsk;
+          // Overlay live orderbook values. Only fall back to lastPrice
+          // when BOTH bid and ask are null on the YES side — repeated
+          // orderbook values are still valid (thin markets don't trade
+          // constantly), so we no longer clobber them with lastPrice.
+          if (ob.yesBid !== null) price.yesBid = ob.yesBid;
+          if (ob.yesAsk !== null) price.yesAsk = ob.yesAsk;
+          if (ob.noBid !== null) price.noBid = ob.noBid;
+          if (ob.noAsk !== null) price.noAsk = ob.noAsk;
 
-          if (unchanged && price.lastPrice !== null) {
+          if (
+            price.yesBid === null &&
+            price.yesAsk === null &&
+            price.lastPrice !== null
+          ) {
             log.push(
-              `[kalshi] ${station.code} >${thresholdKey}" orderbook unchanged, using lastPrice=${price.lastPrice}c`
+              `[kalshi] ${station.code} >${thresholdKey}" empty book, fallback lastPrice=${price.lastPrice}c`
             );
             price.yesBid = price.lastPrice;
             price.yesAsk = price.lastPrice;
             price.noBid = 100 - price.lastPrice;
             price.noAsk = 100 - price.lastPrice;
-            price.isStale = false;
-          } else {
-            if (ob.yesBid !== null) price.yesBid = ob.yesBid;
-            if (ob.yesAsk !== null) price.yesAsk = ob.yesAsk;
-            if (ob.noBid !== null) price.noBid = ob.noBid;
-            if (ob.noAsk !== null) price.noAsk = ob.noAsk;
-            price.isStale = price.yesBid === null || price.yesAsk === null;
-
-            log.push(
-              `[kalshi] OB ${station.code} >${thresholdKey}": ` +
-                `bid ${oldBid}c->${price.yesBid}c  ask ${oldAsk}c->${price.yesAsk}c ` +
-                `noBid=${price.noBid}c noAsk=${price.noAsk}c`
-            );
           }
+          price.isStale = price.yesBid === null || price.yesAsk === null;
 
-          lastOrderbookValues.set(price.ticker, {
-            yesBid: ob.yesBid,
-            yesAsk: ob.yesAsk,
-            noBid: ob.noBid,
-            noAsk: ob.noAsk,
-          });
+          log.push(
+            `[kalshi] OB ${station.code} >${thresholdKey}" ${price.ticker}: ` +
+              `bid ${oldBid}c->${price.yesBid}c ask ${oldAsk}c->${price.yesAsk}c ` +
+              `yb=${price.yesBid} ya=${price.yesAsk} nb=${price.noBid} na=${price.noAsk}`
+          );
+
         } else {
           log.push(
             `[kalshi] OB ${station.code} >${thresholdKey}": empty orderbook`

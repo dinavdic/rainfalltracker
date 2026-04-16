@@ -1,7 +1,7 @@
 "use client";
 
 import { useMemo } from "react";
-import { ForecastSnapshot, StationSnapshot } from "@/lib/convergence";
+import { ForecastSnapshot } from "@/lib/convergence";
 
 // --- Shared types & helpers ---
 

@@ -321,7 +321,7 @@ export default function Dashboard() {
         </header>
 
         {/* Biggest movers across last two snapshots */}
-        <TopMovers snapshots={mergedSnapshots} />
+        <TopMovers snapshots={mergedSnapshots} portfolio={portfolio} kalshi={kalshi} />
 
         {/* Station cards grid */}
         <div className="grid grid-cols-1 md:grid-cols-2 gap-4 mb-8">

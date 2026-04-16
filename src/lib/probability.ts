@@ -152,6 +152,60 @@ function getEnsoBaseRate(
 }
 
 /**
+ * Sample from a zero-inflated gamma distribution.
+ */
+function sampleZeroInflatedGamma(params: GammaParams): number {
+  if (Math.random() < params.zero_fraction) return 0;
+  const u = Math.random() * 0.999 + 0.0005;
+  return Math.max(0, jStat.gamma.inv(u, params.shape, params.scale));
+}
+
+/**
+ * BMA (Bayesian Model Averaging) mixture Monte Carlo sampling.
+ *
+ * For each MC draw: with probability `skillWeight`, pick a random ensemble
+ * member's QPF (plus tail gamma for uncovered days); otherwise sample from
+ * the conditional climatological gamma for the full remaining period.
+ *
+ * Returns fraction of draws where remaining QPF >= remainingNeeded.
+ */
+function bmaMixtureExceedProb(
+  memberSums: number[],
+  remainingNeeded: number,
+  skillWeight: number,
+  condGamma: GammaParams | null,
+  tailGamma: GammaParams | null,
+  hasUncoveredDays: boolean,
+): number | null {
+  if (memberSums.length === 0) return null;
+
+  const N = 10000;
+  const w = skillWeight;
+  const nMembers = memberSums.length;
+  let exceedCount = 0;
+
+  for (let i = 0; i < N; i++) {
+    let draw: number;
+
+    if (Math.random() < w) {
+      const mi = Math.floor(Math.random() * nMembers);
+      draw = memberSums[mi];
+      if (hasUncoveredDays && tailGamma) {
+        draw += sampleZeroInflatedGamma(tailGamma);
+      }
+    } else {
+      draw = condGamma ? sampleZeroInflatedGamma(condGamma) : 0;
+    }
+
+    if (draw >= remainingNeeded) {
+      exceedCount++;
+    }
+  }
+
+  return exceedCount / N;
+}
+
+/**
  * Compute conditional probabilities of exceeding rainfall thresholds.
  *
  * Uses ensemble members when available: for each member, check if
@@ -207,38 +261,6 @@ export function computeProbabilities(
     }
   }
 
-  /**
-   * Compute P(exceed threshold) from a set of ensemble member sums.
-   * Returns null if memberSums is empty.
-   */
-  function ensembleExceedProb(
-    memberSums: number[],
-    remainingNeeded: number,
-    forecastDays: number,
-  ): number | null {
-    if (memberSums.length === 0) return null;
-    const uncoveredDays = daysRemaining - forecastDays;
-
-    if (uncoveredDays <= 0) {
-      let exceedCount = 0;
-      for (const s of memberSums) {
-        if (s >= remainingNeeded) exceedCount++;
-      }
-      return exceedCount / memberSums.length;
-    } else {
-      let totalProb = 0;
-      for (const s of memberSums) {
-        const gap = remainingNeeded - s;
-        if (gap <= 0) {
-          totalProb += 1.0;
-        } else if (tailGamma) {
-          totalProb += gammaSurvival(gap, tailGamma);
-        }
-      }
-      return totalProb / memberSums.length;
-    }
-  }
-
   const thresholds: ThresholdProbability[] = THRESHOLDS.map((threshold) => {
     const thresholdKey = threshold.toFixed(1);
     const baseRate = getEnsoBaseRate(monthData, thresholdKey, ensoPhase);
@@ -280,12 +302,20 @@ export function computeProbabilities(
     let ecmwfProb: number | null = null;
 
     if (ensemble !== null) {
-      const fd = ensemble.forecastDays;
-      const combined = ensembleExceedProb(ensemble.memberSums, remainingNeeded, fd);
+      const w = ensemble.skillWeight ?? 1;
+      const hasUncovered = daysRemaining - ensemble.forecastDays > 0;
+
+      const combined = bmaMixtureExceedProb(
+        ensemble.memberSums, remainingNeeded, w, gamma, tailGamma, hasUncovered,
+      );
       if (combined !== null) ensembleProbability = combined;
 
-      gefsProb = ensembleExceedProb(ensemble.gefsMemberSums, remainingNeeded, fd);
-      ecmwfProb = ensembleExceedProb(ensemble.ecmwfMemberSums, remainingNeeded, fd);
+      gefsProb = bmaMixtureExceedProb(
+        ensemble.gefsMemberSums, remainingNeeded, w, gamma, tailGamma, hasUncovered,
+      );
+      ecmwfProb = bmaMixtureExceedProb(
+        ensemble.ecmwfMemberSums, remainingNeeded, w, gamma, tailGamma, hasUncovered,
+      );
     } else if (qpfSum !== null) {
       // Fallback: deterministic NWS QPF blending (old behavior)
       const forecastDays = Math.min(7, daysRemaining);

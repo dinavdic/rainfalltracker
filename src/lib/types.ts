@@ -105,6 +105,7 @@ export interface EnsembleData {
   forecastDays: number; // how many days of the month the forecast covers
   stats: EnsembleStats; // combined stats (backward compat)
   modelRuns?: { gefs: string | null; ecmwf: string | null }; // e.g. "12z"
+  skillWeight: number; // effective BMA mixture weight (0 = pure climo, 1 = pure ensemble)
 }
 
 export interface StationRainfallData {

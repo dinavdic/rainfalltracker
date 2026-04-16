@@ -110,7 +110,7 @@ export const KALSHI_SERIES_CANDIDATES: Record<string, string[]> = {
   MDW: ["KXRAINCHIM", "KXRAINMDWM", "KXRAINCHI"],
   LAX: ["KXRAINLAXM", "KXRAINLAM", "KXRAINLAX"],
   AUS: ["KXRAINAUSM", "KXRAINAUM", "KXRAINAUS"],
-  DFW: [], // Kalshi doesn't list DFW rainfall markets as of Apr 2026
+  DFW: ["KXRAINDALM", "KXRAINDAL"],
   HOU: ["KXRAINHOUM", "KXRAINHOU", "KXRAINHTX"],
   SEA: ["KXRAINSEAM", "KXRAINSEM", "KXRAINSEA"],
 };

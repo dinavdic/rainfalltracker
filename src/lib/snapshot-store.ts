@@ -64,8 +64,13 @@ function isSnapshotKey(pathname: string): boolean {
 export async function saveServerSnapshot(
   snapshot: ForecastSnapshot,
 ): Promise<void> {
-  if (!hasBlobToken()) return;
+  if (!hasBlobToken()) {
+    console.warn(`[snapshot] No BLOB_READ_WRITE_TOKEN — skipping save`);
+    return;
+  }
   const key = `${BLOB_PREFIX}${timestampToKey(snapshot.timestamp)}.json`;
+  const bodySize = JSON.stringify(snapshot).length;
+  console.log(`[snapshot] Saving blob: ${key} (${bodySize} bytes)`);
   try {
     await put(key, JSON.stringify(snapshot), {
       access: "private",
@@ -75,9 +80,9 @@ export async function saveServerSnapshot(
     });
     console.log(`[snapshot] Saved blob: ${key}`);
   } catch (e) {
-    console.warn(
-      `[snapshot] Blob save failed: ${e instanceof Error ? e.message : String(e)}`,
-    );
+    const msg = e instanceof Error ? e.message : String(e);
+    console.error(`[snapshot] Blob save failed: ${msg}`);
+    throw new Error(`Blob save failed: ${msg}`);
   }
 }
 
@@ -95,7 +100,10 @@ export async function saveServerSnapshot(
 export async function loadServerSnapshots(
   limit: number = 100,
 ): Promise<ForecastSnapshot[]> {
-  if (!hasBlobToken()) return [];
+  if (!hasBlobToken()) {
+    console.warn(`[snapshot] No BLOB_READ_WRITE_TOKEN — returning empty`);
+    return [];
+  }
 
   const cutoff = Date.now() - MAX_AGE_MS;
 

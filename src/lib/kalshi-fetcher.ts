@@ -268,7 +268,8 @@ function matchStationByTitle(title: string): string | null {
 }
 
 export async function discoverAndFetchMarkets(
-  log: string[]
+  log: string[],
+  options?: { skipOrderbook?: boolean },
 ): Promise<Record<string, KalshiStationData>> {
   const result: Record<string, KalshiStationData> = {};
 
@@ -461,74 +462,78 @@ export async function discoverAndFetchMarkets(
     }
   }
 
-  log.push("[kalshi] === Orderbook refresh for live bid/ask ===");
-  let orderbookFetches = 0;
-  let debuggedFirst = false;
+  if (options?.skipOrderbook) {
+    log.push("[kalshi] Skipping orderbook refresh (skipOrderbook=true)");
+  } else {
+    log.push("[kalshi] === Orderbook refresh for live bid/ask ===");
+    let orderbookFetches = 0;
+    let debuggedFirst = false;
 
-  for (const station of STATIONS) {
-    for (const [thresholdKey, price] of Object.entries(
-      result[station.code].thresholds
-    )) {
-      const isDebug = !debuggedFirst;
-      const ob = await fetchOrderbook(price.ticker, log, isDebug);
-      if (isDebug) debuggedFirst = true;
-      orderbookFetches++;
+    for (const station of STATIONS) {
+      for (const [thresholdKey, price] of Object.entries(
+        result[station.code].thresholds
+      )) {
+        const isDebug = !debuggedFirst;
+        const ob = await fetchOrderbook(price.ticker, log, isDebug);
+        if (isDebug) debuggedFirst = true;
+        orderbookFetches++;
 
-      if (
-        ob.yesBid !== null ||
-        ob.yesAsk !== null ||
-        ob.noBid !== null ||
-        ob.noAsk !== null
-      ) {
-        const oldBid = price.yesBid;
-        const oldAsk = price.yesAsk;
+        if (
+          ob.yesBid !== null ||
+          ob.yesAsk !== null ||
+          ob.noBid !== null ||
+          ob.noAsk !== null
+        ) {
+          const oldBid = price.yesBid;
+          const oldAsk = price.yesAsk;
 
-        const prevOb = lastOrderbookValues.get(price.ticker);
-        const unchanged =
-          prevOb !== undefined &&
-          prevOb.yesBid === ob.yesBid &&
-          prevOb.yesAsk === ob.yesAsk &&
-          prevOb.noBid === ob.noBid &&
-          prevOb.noAsk === ob.noAsk;
+          const prevOb = lastOrderbookValues.get(price.ticker);
+          const unchanged =
+            prevOb !== undefined &&
+            prevOb.yesBid === ob.yesBid &&
+            prevOb.yesAsk === ob.yesAsk &&
+            prevOb.noBid === ob.noBid &&
+            prevOb.noAsk === ob.noAsk;
 
-        if (unchanged && price.lastPrice !== null) {
-          log.push(
-            `[kalshi] ${station.code} >${thresholdKey}" orderbook unchanged, using lastPrice=${price.lastPrice}c`
-          );
-          price.yesBid = price.lastPrice;
-          price.yesAsk = price.lastPrice;
-          price.noBid = 100 - price.lastPrice;
-          price.noAsk = 100 - price.lastPrice;
-          price.isStale = false;
+          if (unchanged && price.lastPrice !== null) {
+            log.push(
+              `[kalshi] ${station.code} >${thresholdKey}" orderbook unchanged, using lastPrice=${price.lastPrice}c`
+            );
+            price.yesBid = price.lastPrice;
+            price.yesAsk = price.lastPrice;
+            price.noBid = 100 - price.lastPrice;
+            price.noAsk = 100 - price.lastPrice;
+            price.isStale = false;
+          } else {
+            if (ob.yesBid !== null) price.yesBid = ob.yesBid;
+            if (ob.yesAsk !== null) price.yesAsk = ob.yesAsk;
+            if (ob.noBid !== null) price.noBid = ob.noBid;
+            if (ob.noAsk !== null) price.noAsk = ob.noAsk;
+            price.isStale = price.yesBid === null || price.yesAsk === null;
+
+            log.push(
+              `[kalshi] OB ${station.code} >${thresholdKey}": ` +
+                `bid ${oldBid}c->${price.yesBid}c  ask ${oldAsk}c->${price.yesAsk}c ` +
+                `noBid=${price.noBid}c noAsk=${price.noAsk}c`
+            );
+          }
+
+          lastOrderbookValues.set(price.ticker, {
+            yesBid: ob.yesBid,
+            yesAsk: ob.yesAsk,
+            noBid: ob.noBid,
+            noAsk: ob.noAsk,
+          });
         } else {
-          if (ob.yesBid !== null) price.yesBid = ob.yesBid;
-          if (ob.yesAsk !== null) price.yesAsk = ob.yesAsk;
-          if (ob.noBid !== null) price.noBid = ob.noBid;
-          if (ob.noAsk !== null) price.noAsk = ob.noAsk;
-          price.isStale = price.yesBid === null || price.yesAsk === null;
-
           log.push(
-            `[kalshi] OB ${station.code} >${thresholdKey}": ` +
-              `bid ${oldBid}c->${price.yesBid}c  ask ${oldAsk}c->${price.yesAsk}c ` +
-              `noBid=${price.noBid}c noAsk=${price.noAsk}c`
+            `[kalshi] OB ${station.code} >${thresholdKey}": empty orderbook`
           );
         }
-
-        lastOrderbookValues.set(price.ticker, {
-          yesBid: ob.yesBid,
-          yesAsk: ob.yesAsk,
-          noBid: ob.noBid,
-          noAsk: ob.noAsk,
-        });
-      } else {
-        log.push(
-          `[kalshi] OB ${station.code} >${thresholdKey}": empty orderbook`
-        );
       }
     }
-  }
 
-  log.push(`[kalshi] Orderbook: ${orderbookFetches} fetched`);
+    log.push(`[kalshi] Orderbook: ${orderbookFetches} fetched`);
+  }
 
   let totalMapped = 0;
   for (const station of STATIONS) {
@@ -550,13 +555,15 @@ export async function discoverAndFetchMarkets(
  * probe don't hit Vercel Deployment Protection or internal routing
  * issues. Same logic as the GET handler in /api/fetch-kalshi.
  */
-export async function fetchKalshiDirect(): Promise<KalshiApiResponse> {
+export async function fetchKalshiDirect(
+  options?: { skipOrderbook?: boolean },
+): Promise<KalshiApiResponse> {
   const log: string[] = [];
   log.push(
     `[kalshi] Direct fetch (${HAS_AUTH ? "authenticated" : "unauth"}) at ${new Date().toISOString()}`,
   );
 
-  const stations = await discoverAndFetchMarkets(log);
+  const stations = await discoverAndFetchMarkets(log, options);
 
   for (const line of log) console.log(line);
 

@@ -295,14 +295,27 @@ export async function GET(request: NextRequest) {
 
   // --- 3. Always save a snapshot every probe run for volatility analysis.
   //        If new model run or MTD detected, also trigger a full update. ---
+  //        Save BEFORE any slow operations (orderbook fetches) to avoid timeout.
   let snapshotSaved = false;
   let snapshotError: string | undefined;
 
+  // Diagnostic: verify blob token is available
+  const blobTokenPresent = !!process.env.BLOB_READ_WRITE_TOKEN;
+  log.push(`[probe] Blob token present: ${blobTokenPresent}`);
+  console.log(`[probe] Blob token present: ${blobTokenPresent}`);
+
   try {
-    // Fetch fresh Kalshi prices directly (avoids 401 from internal HTTP).
+    // Fetch Kalshi prices directly, skipping orderbook refresh to stay
+    // within the function timeout. Market discovery alone gives us
+    // bid/ask/lastPrice from the /markets endpoint; orderbook refresh
+    // adds ~30s of per-ticker API calls that risk timing us out.
     let kalshi: KalshiApiResponse | null = null;
     try {
-      kalshi = await fetchKalshiDirect();
+      log.push(`[probe] Starting Kalshi direct fetch (skipOrderbook=true)`);
+      console.log(`[probe] Starting Kalshi direct fetch (skipOrderbook=true)`);
+      kalshi = await fetchKalshiDirect({ skipOrderbook: true });
+      log.push(`[probe] Kalshi direct fetch completed`);
+      console.log(`[probe] Kalshi direct fetch completed`);
     } catch (e) {
       const msg = e instanceof Error ? e.message : String(e);
       const line = `[probe] Kalshi direct fetch failed: ${msg}`;
@@ -311,7 +324,11 @@ export async function GET(request: NextRequest) {
     }
 
     // Load the most recent snapshot for ensemble probs to carry forward.
+    log.push(`[probe] Loading latest snapshot from blob store`);
+    console.log(`[probe] Loading latest snapshot from blob store`);
     const history = await loadServerSnapshots(1);
+    log.push(`[probe] loadServerSnapshots returned ${history.length} snapshot(s)`);
+    console.log(`[probe] loadServerSnapshots returned ${history.length} snapshot(s)`);
     const latest = history.length > 0 ? history[0] : null;
 
     if (!latest) {
@@ -360,20 +377,33 @@ export async function GET(request: NextRequest) {
         stations[code] = next;
       }
 
+      const stationCount = Object.keys(stations).length;
+      log.push(`[probe] About to save snapshot with ${stationCount} stations`);
+      console.log(`[probe] About to save snapshot with ${stationCount} stations`);
+
       const snapshot: ForecastSnapshot = {
         timestamp: nowIso,
         stations,
       };
-      await saveServerSnapshot(snapshot);
-      snapshotSaved = true;
-      const triggerDesc = runChanged || mtdChanged ? "change detected" : "no change trigger";
-      const line = `[probe] Snapshot saved (${triggerDesc})`;
-      console.log(line);
-      log.push(line);
+
+      try {
+        await saveServerSnapshot(snapshot);
+        snapshotSaved = true;
+        const triggerDesc = runChanged || mtdChanged ? "change detected" : "no change trigger";
+        const line = `[probe] Snapshot saved (${triggerDesc})`;
+        console.log(line);
+        log.push(line);
+      } catch (saveErr) {
+        const msg = saveErr instanceof Error ? saveErr.message : String(saveErr);
+        const line = `[probe] Save failed: ${msg}`;
+        console.error(line);
+        log.push(line);
+        snapshotError = msg;
+      }
     }
   } catch (e) {
     snapshotError = e instanceof Error ? e.message : String(e);
-    const line = `[probe] Snapshot save failed: ${snapshotError}`;
+    const line = `[probe] Snapshot pipeline failed: ${snapshotError}`;
     console.warn(line);
     log.push(line);
   }

@@ -184,8 +184,8 @@ export default function TopMovers({
       mMovers.sort((a, b) => Math.abs(b.changePp) - Math.abs(a.changePp));
     }
 
-    // --- Market Movers ---
-    const marketIdx = Math.max(0, sorted.length - 7);
+    // --- Market Movers: compare to ~6 hours ago (36 snapshots back). ---
+    const marketIdx = Math.max(0, sorted.length - 37);
     const marketPrev = sorted[marketIdx];
     const mkMovers: MarketMover[] = [];
 
@@ -221,7 +221,7 @@ export default function TopMovers({
     const posMovers: PositionMover[] = [];
     const positions = portfolio?.positions;
     const tickerMap = kalshi ? buildTickerMap(kalshi) : null;
-    // Use same 6-snapshot-back window as market movers
+    // Use same 36-snapshot-back window as market movers
     const posPrev = marketPrev !== curr ? marketPrev : null;
 
     if (positions && tickerMap && posPrev) {
@@ -405,7 +405,7 @@ export default function TopMovers({
 
         {marketMovers.length === 0 ? (
           <p className="text-xs text-gray-500 mt-2">
-            No Kalshi price moves in the last hour.
+            No Kalshi price moves in the last 6 hours.
           </p>
         ) : (
           <div className="mt-2 flex flex-col gap-1.5" role="list">
@@ -474,7 +474,7 @@ export default function TopMovers({
           <p className="text-xs text-gray-500 mt-2">No open positions.</p>
         ) : positionMovers.length === 0 ? (
           <p className="text-xs text-gray-500 mt-2">
-            No position value changes in the last hour.
+            No position value changes in the last 6 hours.
           </p>
         ) : (
           <div className="mt-2 flex flex-col gap-1.5" role="list">
@@ -542,7 +542,7 @@ export default function TopMovers({
                     {m.edgeChange !== null && (
                       <span className="text-gray-400">
                         ({m.edgeChange >= 0 ? "+" : ""}
-                        {m.edgeChange.toFixed(0)} 1h)
+                        {m.edgeChange.toFixed(0)} 6h)
                       </span>
                     )}
                     {m.edgeCompressed && (

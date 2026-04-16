@@ -332,74 +332,93 @@ export async function GET(request: NextRequest) {
     const latest = history.length > 0 ? history[0] : null;
 
     if (!latest) {
-      const line = `[probe] No prior snapshot to carry forward; skipping snapshot save`;
+      log.push(`[probe] No prior snapshot — seeding with null ensemble probs`);
+      console.log(`[probe] No prior snapshot — seeding with null ensemble probs`);
+    }
+
+    // Build station snapshots: carry forward from latest if available,
+    // otherwise seed with null ensemble fields. Either way, overlay
+    // fresh MTD and Kalshi prices.
+    const stationCodes = latest
+      ? Object.keys(latest.stations)
+      : STATIONS.map((s) => s.code);
+
+    const stations: Record<string, StationSnapshot> = {};
+    for (const code of stationCodes) {
+      const prevStation = latest?.stations[code];
+      const next: StationSnapshot = prevStation
+        ? { ...prevStation, thresholds: { ...prevStation.thresholds } }
+        : {
+            mtd: null,
+            gefsMedian: null,
+            ecmwfMedian: null,
+            gefsP25: null,
+            gefsP75: null,
+            ecmwfP25: null,
+            ecmwfP75: null,
+            combinedMedian: null,
+            combinedIQR: null,
+            combinedP10: null,
+            combinedP90: null,
+            thresholds: {},
+          };
+
+      // Update MTD from fresh NWS CLI data if available.
+      const freshMtd = mtdUpdatedState[code];
+      if (freshMtd) {
+        next.mtd = freshMtd.mtd;
+      }
+
+      // Overwrite kalshiPrices with current mid-prices.
+      const kalshiStation = kalshi?.stations?.[code];
+      if (kalshiStation) {
+        const prices: Record<string, number> = {};
+        for (const [thresh, mkt] of Object.entries(
+          kalshiStation.thresholds,
+        )) {
+          let mid: number | null = null;
+          if (mkt.yesBid !== null && mkt.yesAsk !== null) {
+            mid = (mkt.yesBid + mkt.yesAsk) / 2;
+          } else if (mkt.lastPrice !== null) {
+            mid = mkt.lastPrice;
+          }
+          if (mid !== null) {
+            prices[thresh] = Math.round(mid * 100) / 100;
+          }
+        }
+        if (Object.keys(prices).length > 0) {
+          next.kalshiPrices = prices;
+        } else {
+          delete next.kalshiPrices;
+        }
+      }
+
+      stations[code] = next;
+    }
+
+    const stationCount = Object.keys(stations).length;
+    log.push(`[probe] About to save snapshot with ${stationCount} stations`);
+    console.log(`[probe] About to save snapshot with ${stationCount} stations`);
+
+    const snapshot: ForecastSnapshot = {
+      timestamp: nowIso,
+      stations,
+    };
+
+    try {
+      await saveServerSnapshot(snapshot);
+      snapshotSaved = true;
+      const triggerDesc = runChanged || mtdChanged ? "change detected" : "no change trigger";
+      const seedNote = !latest ? ", seed" : "";
+      const line = `[probe] Snapshot saved (${triggerDesc}${seedNote})`;
       console.log(line);
       log.push(line);
-    } else {
-      const stations: Record<string, StationSnapshot> = {};
-      for (const [code, prevStation] of Object.entries(latest.stations)) {
-        // Carry forward all ensemble fields from the latest snapshot.
-        const next: StationSnapshot = {
-          ...prevStation,
-          thresholds: { ...prevStation.thresholds },
-        };
-
-        // Update MTD from fresh NWS CLI data if available.
-        const freshMtd = mtdUpdatedState[code];
-        if (freshMtd) {
-          next.mtd = freshMtd.mtd;
-        }
-
-        // Overwrite kalshiPrices with current mid-prices.
-        const kalshiStation = kalshi?.stations?.[code];
-        if (kalshiStation) {
-          const prices: Record<string, number> = {};
-          for (const [thresh, mkt] of Object.entries(
-            kalshiStation.thresholds,
-          )) {
-            let mid: number | null = null;
-            if (mkt.yesBid !== null && mkt.yesAsk !== null) {
-              mid = (mkt.yesBid + mkt.yesAsk) / 2;
-            } else if (mkt.lastPrice !== null) {
-              mid = mkt.lastPrice;
-            }
-            if (mid !== null) {
-              prices[thresh] = Math.round(mid * 100) / 100;
-            }
-          }
-          if (Object.keys(prices).length > 0) {
-            next.kalshiPrices = prices;
-          } else {
-            delete next.kalshiPrices;
-          }
-        }
-
-        stations[code] = next;
-      }
-
-      const stationCount = Object.keys(stations).length;
-      log.push(`[probe] About to save snapshot with ${stationCount} stations`);
-      console.log(`[probe] About to save snapshot with ${stationCount} stations`);
-
-      const snapshot: ForecastSnapshot = {
-        timestamp: nowIso,
-        stations,
-      };
-
-      try {
-        await saveServerSnapshot(snapshot);
-        snapshotSaved = true;
-        const triggerDesc = runChanged || mtdChanged ? "change detected" : "no change trigger";
-        const line = `[probe] Snapshot saved (${triggerDesc})`;
-        console.log(line);
-        log.push(line);
-      } catch (saveErr) {
-        const msg = saveErr instanceof Error ? saveErr.message : String(saveErr);
-        const line = `[probe] Save failed: ${msg}`;
-        console.error(line);
-        log.push(line);
-        snapshotError = msg;
-      }
+    } catch (saveErr) {
+      const msg = saveErr instanceof Error ? saveErr.message : String(saveErr);
+      const line = `[probe] Save failed: ${msg}`;
+      console.error(line);
+      log.push(line);
+      snapshotError = msg;
     }
   } catch (e) {
     snapshotError = e instanceof Error ? e.message : String(e);

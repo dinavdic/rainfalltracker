@@ -11,6 +11,7 @@ import { ForecastSnapshot } from "@/lib/convergence";
 import { StationConvergence, KalshiDelta } from "@/lib/convergence";
 import { EnsembleMomentum } from "@/lib/momentum";
 import ProbabilityTrendChart, { TrendDataPoint } from "./ProbabilityTrendChart";
+import SpreadAnalysisChart, { SpreadDataPoint } from "./SpreadAnalysisChart";
 
 interface StationCardProps {
   code: string;
@@ -28,6 +29,8 @@ interface StationCardProps {
   positions: Record<string, KalshiPosition>;
   snapshots: ForecastSnapshot[];
   lastDate: string | null;
+  climoShape: number | null;
+  climoScale: number | null;
   error?: string;
 }
 
@@ -122,10 +125,12 @@ function MiniSparkline({
   data,
   color,
   label,
+  onClick,
 }: {
   data: { timestamp: string; value: number }[];
   color: string;
   label: string;
+  onClick?: () => void;
 }) {
   const W = 40;
   const H = 14;
@@ -144,8 +149,16 @@ function MiniSparkline({
     return `${x.toFixed(1)},${y.toFixed(1)}`;
   });
 
+  const clickable = !!onClick;
+
   return (
-    <span className="inline-flex flex-col items-center">
+    <span
+      className={`inline-flex flex-col items-center${clickable ? " cursor-pointer" : ""}`}
+      onClick={onClick}
+      role={clickable ? "button" : undefined}
+      tabIndex={clickable ? 0 : undefined}
+      onKeyDown={clickable ? (e) => { if (e.key === "Enter" || e.key === " ") onClick?.(); } : undefined}
+    >
       <svg width={W} height={H} className="block">
         <polyline
           points={points.join(" ")}
@@ -177,9 +190,28 @@ export default function StationCard({
   positions,
   snapshots,
   lastDate,
+  climoShape,
+  climoScale,
   error,
 }: StationCardProps) {
   const [openChart, setOpenChart] = useState<string | null>(null);
+  const [spreadChartOpen, setSpreadChartOpen] = useState(false);
+
+  // Extract spread data for the spread analysis chart
+  const spreadData: SpreadDataPoint[] = useMemo(() => {
+    if (!spreadChartOpen || !snapshots.length) return [];
+    return snapshots
+      .map((snap) => {
+        const st = snap.stations[code];
+        if (!st) return null;
+        return {
+          timestamp: snap.timestamp,
+          iqr: st.combinedIQR,
+          median: st.combinedMedian,
+        };
+      })
+      .filter((d): d is SpreadDataPoint => d !== null);
+  }, [spreadChartOpen, snapshots, code]);
 
   // Extract trend data for the currently open chart from snapshot history
   const trendData: TrendDataPoint[] = useMemo(() => {
@@ -649,7 +681,7 @@ export default function StationCard({
               )}
               {hasSparklineData ? (
                 <span className="inline-flex gap-1 ml-auto">
-                  <MiniSparkline data={iqrHistory} color="#16a34a" label="spread" />
+                  <MiniSparkline data={iqrHistory} color="#16a34a" label="spread" onClick={() => setSpreadChartOpen(!spreadChartOpen)} />
                   <MiniSparkline data={medianHistory} color="#16a34a" label="level" />
                 </span>
               ) : (
@@ -678,7 +710,7 @@ export default function StationCard({
               )}
               {hasSparklineData ? (
                 <span className="inline-flex gap-1 ml-auto">
-                  <MiniSparkline data={iqrHistory} color="#16a34a" label="spread" />
+                  <MiniSparkline data={iqrHistory} color="#16a34a" label="spread" onClick={() => setSpreadChartOpen(!spreadChartOpen)} />
                   <MiniSparkline data={medianHistory} color="#dc2626" label="level" />
                 </span>
               ) : (
@@ -704,7 +736,7 @@ export default function StationCard({
               )}
               {hasSparklineData ? (
                 <span className="inline-flex gap-1 ml-auto">
-                  <MiniSparkline data={iqrHistory} color="#dc2626" label="spread" />
+                  <MiniSparkline data={iqrHistory} color="#dc2626" label="spread" onClick={() => setSpreadChartOpen(!spreadChartOpen)} />
                   <MiniSparkline data={medianHistory} color="#9ca3af" label="level" />
                 </span>
               ) : (
@@ -721,13 +753,24 @@ export default function StationCard({
             <span className="text-gray-500">{"\u2192"} Stable</span>
             {hasSparklineData && (
               <span className="inline-flex gap-1 ml-auto">
-                <MiniSparkline data={iqrHistory} color="#9ca3af" label="spread" />
+                <MiniSparkline data={iqrHistory} color="#9ca3af" label="spread" onClick={() => setSpreadChartOpen(!spreadChartOpen)} />
                 <MiniSparkline data={medianHistory} color="#9ca3af" label="level" />
               </span>
             )}
           </div>
         );
       })()}
+
+      {/* Spread analysis chart (toggled by clicking spread sparkline) */}
+      {spreadChartOpen && (
+        <SpreadAnalysisChart
+          stationCode={code}
+          data={spreadData}
+          climoShape={climoShape}
+          climoScale={climoScale}
+          onClose={() => setSpreadChartOpen(false)}
+        />
+      )}
 
       {/* Forecast summary line */}
       <div className="text-xs text-gray-400">

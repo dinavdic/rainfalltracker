@@ -329,6 +329,11 @@ export default function Dashboard() {
             const probs = stationProbs[station.code];
             const rainData = rainfall?.stations[station.code];
 
+            // Look up gamma params for climatological stdev
+            const dayDist = historical?.stations[station.code]
+              ?.months[String(month)]?.days[String(dayOfMonth)] ?? null;
+            const gamma = dayDist?.gamma ?? null;
+
             return (
               <div
                 key={station.code}
@@ -361,6 +366,8 @@ export default function Dashboard() {
                 positions={portfolio?.positions ?? {}}
                 snapshots={mergedSnapshots}
                 lastDate={rainData?.lastUpdated ?? null}
+                climoShape={gamma?.shape ?? null}
+                climoScale={gamma?.scale ?? null}
                 error={rainData?.error}
               />
               </div>

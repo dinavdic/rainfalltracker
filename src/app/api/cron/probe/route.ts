@@ -312,9 +312,10 @@ export async function GET(request: NextRequest) {
       }
       const kalshi = (await kalshiResp.json()) as KalshiApiResponse;
 
-      // Load the most recent full snapshot for ensemble probs to carry forward.
-      const history = await loadServerSnapshots();
-      const latest = history.length > 0 ? history[history.length - 1] : null;
+      // Load the most recent snapshot for ensemble probs to carry forward.
+      // limit=1 avoids fetching the full history — we only need the latest.
+      const history = await loadServerSnapshots(1);
+      const latest = history.length > 0 ? history[0] : null;
 
       if (!latest) {
         const line = `[probe] No prior snapshot to carry forward; skipping price-only snapshot`;

@@ -1,119 +1,154 @@
-import { promises as fs } from "fs";
-import path from "path";
-import { put, get } from "@vercel/blob";
-import { ForecastSnapshot, appendSnapshot } from "./convergence";
+import { put, list, get } from "@vercel/blob";
+import { ForecastSnapshot } from "./convergence";
 
 /**
- * Server-side snapshot storage backed by Vercel Blob, with /tmp as a
- * warm-instance cache.
+ * Server-side snapshot storage backed by Vercel Blob — **append-only**.
  *
- * Write path: append to the existing history, then persist to both
- * /tmp and Vercel Blob concurrently.
+ * Each snapshot is written to its own uniquely-keyed blob:
  *
- * Read path: try /tmp first (fast, warm instance), and fall back to
- * Blob on cold starts or instance recycling. Blob reads rehydrate /tmp
- * so subsequent calls on the same instance hit the fast path.
+ *     snapshots/YYYY-MM-DDTHH-MM-SS-sssZ.json
+ *
+ * (colons and the decimal dot in the ISO timestamp are replaced by
+ * hyphens so the key is a clean path segment.)
+ *
+ * Reads list all blobs under the "snapshots/" prefix, filter by the
+ * 7-day retention window, sort lexicographically (== chronologically
+ * thanks to the ISO naming), and return up to `limit` newest entries.
  *
  * BLOB_READ_WRITE_TOKEN is expected to be set in the Vercel environment;
- * if missing (local dev without token), Blob operations are skipped and
- * the store degrades to /tmp-only.
+ * if missing (local dev without token), Blob operations are skipped.
  */
 
-const TMP_PATH = path.join("/tmp", "forecast-snapshots.json");
-const BLOB_PATH = "snapshots/forecast-snapshots.json";
+const BLOB_PREFIX = "snapshots/";
 const MAX_AGE_MS = 7 * 24 * 60 * 60 * 1000; // 7 days
 
 function hasBlobToken(): boolean {
   return !!process.env.BLOB_READ_WRITE_TOKEN;
 }
 
-function filterByAge(data: unknown): ForecastSnapshot[] {
-  if (!Array.isArray(data)) return [];
-  const cutoff = Date.now() - MAX_AGE_MS;
-  return (data as ForecastSnapshot[]).filter(
-    (s) => new Date(s.timestamp).getTime() > cutoff,
+/**
+ * Convert an ISO timestamp to a blob-key-safe string.
+ *   "2026-04-15T18:30:45.123Z" → "2026-04-15T18-30-45-123Z"
+ */
+function timestampToKey(iso: string): string {
+  return iso.replace(/:/g, "-").replace(/\./g, "-");
+}
+
+/**
+ * Reverse the key transform to recover an ISO timestamp for date parsing.
+ *   "2026-04-15T18-30-45-123Z" → "2026-04-15T18:30:45.123Z"
+ */
+function keyToTimestamp(stem: string): string {
+  // Match the time portion: T followed by HH-MM-SS-mmmZ
+  return stem.replace(
+    /T(\d{2})-(\d{2})-(\d{2})-(\d{3})Z/,
+    "T$1:$2:$3.$4Z",
   );
 }
 
-/** Returns null if the /tmp file doesn't exist (cold start). */
-async function loadFromTmp(): Promise<ForecastSnapshot[] | null> {
-  try {
-    const raw = await fs.readFile(TMP_PATH, "utf-8");
-    return filterByAge(JSON.parse(raw));
-  } catch {
-    return null;
-  }
-}
-
-async function loadFromBlob(): Promise<ForecastSnapshot[]> {
-  if (!hasBlobToken()) return [];
-  try {
-    // Private blobs require authentication — use the SDK's get() with the
-    // token rather than a raw fetch(url). useCache: false skips the CDN
-    // cache so we always read the latest snapshot batch the cron wrote.
-    const result = await get(BLOB_PATH, {
-      access: "private",
-      useCache: false,
-    });
-    if (!result || !result.stream) return [];
-    const data = await new Response(result.stream).json();
-    return filterByAge(data);
-  } catch (e) {
-    console.warn(
-      `[snapshot-store] Blob load failed: ${e instanceof Error ? e.message : String(e)}`,
-    );
-    return [];
-  }
-}
-
-async function saveToTmp(snapshots: ForecastSnapshot[]): Promise<void> {
-  try {
-    await fs.writeFile(TMP_PATH, JSON.stringify(snapshots));
-  } catch {
-    // non-fatal
-  }
-}
-
-async function saveToBlob(snapshots: ForecastSnapshot[]): Promise<void> {
-  if (!hasBlobToken()) return;
-  try {
-    await put(BLOB_PATH, JSON.stringify(snapshots), {
-      access: "private",
-      contentType: "application/json",
-      addRandomSuffix: false,
-      allowOverwrite: true,
-    });
-  } catch (e) {
-    console.warn(
-      `[snapshot-store] Blob save failed: ${e instanceof Error ? e.message : String(e)}`,
-    );
-  }
-}
-
 /**
- * Load snapshots from /tmp first; on cold start (no /tmp file), fall back
- * to Vercel Blob and rehydrate /tmp for the rest of the instance's life.
+ * Return true if `pathname` looks like a per-snapshot key (as opposed
+ * to other blobs like last-model-run.json that share the prefix).
  */
-export async function loadServerSnapshots(): Promise<ForecastSnapshot[]> {
-  const tmp = await loadFromTmp();
-  if (tmp !== null) return tmp;
-
-  const fromBlob = await loadFromBlob();
-  if (fromBlob.length > 0) {
-    // Warm the /tmp cache so subsequent reads on this instance skip Blob.
-    await saveToTmp(fromBlob);
-  }
-  return fromBlob;
+function isSnapshotKey(pathname: string): boolean {
+  const stem = pathname.replace(BLOB_PREFIX, "").replace(".json", "");
+  const iso = keyToTimestamp(stem);
+  return !isNaN(new Date(iso).getTime());
 }
 
 /**
- * Append a snapshot to the existing history and persist to both /tmp
- * and Vercel Blob. Dedup and pruning are handled by appendSnapshot().
+ * Append a single snapshot to Vercel Blob as a new, uniquely-keyed
+ * object. This never overwrites existing snapshots — each call creates
+ * a new blob.
  */
 export async function saveServerSnapshot(
   snapshot: ForecastSnapshot,
 ): Promise<void> {
-  const existing = await loadServerSnapshots();
-  const updated = appendSnapshot(existing, snapshot);
-  await Promise.all([saveToTmp(updated), saveToBlob(updated)]);
+  if (!hasBlobToken()) return;
+  const key = `${BLOB_PREFIX}${timestampToKey(snapshot.timestamp)}.json`;
+  try {
+    await put(key, JSON.stringify(snapshot), {
+      access: "private",
+      contentType: "application/json",
+      addRandomSuffix: false,
+      allowOverwrite: true, // harmless — key already unique per timestamp
+    });
+    console.log(`[snapshot] Saved blob: ${key}`);
+  } catch (e) {
+    console.warn(
+      `[snapshot] Blob save failed: ${e instanceof Error ? e.message : String(e)}`,
+    );
+  }
+}
+
+/**
+ * Load server snapshots from Vercel Blob, returned in chronological
+ * order (oldest first).
+ *
+ * Lists all blob keys under "snapshots/", filters to valid snapshot
+ * keys within the 7-day retention window, sorts chronologically, takes
+ * the most recent `limit` entries, and fetches each blob's content in
+ * parallel.
+ *
+ * @param limit  Maximum number of snapshots to return (default 100).
+ */
+export async function loadServerSnapshots(
+  limit: number = 100,
+): Promise<ForecastSnapshot[]> {
+  if (!hasBlobToken()) return [];
+
+  const cutoff = Date.now() - MAX_AGE_MS;
+
+  // Collect all snapshot-shaped blob entries under the prefix.
+  const entries: { url: string; pathname: string }[] = [];
+  try {
+    let cursor: string | undefined;
+    do {
+      const page = await list({
+        prefix: BLOB_PREFIX,
+        limit: 1000,
+        cursor,
+      });
+      for (const blob of page.blobs) {
+        if (!isSnapshotKey(blob.pathname)) continue;
+        // Quick age check from the key to avoid fetching ancient blobs.
+        const stem = blob.pathname.replace(BLOB_PREFIX, "").replace(".json", "");
+        const ts = new Date(keyToTimestamp(stem)).getTime();
+        if (Number.isFinite(ts) && ts > cutoff) {
+          entries.push({ url: blob.url, pathname: blob.pathname });
+        }
+      }
+      cursor = page.hasMore ? page.cursor : undefined;
+    } while (cursor);
+  } catch (e) {
+    console.warn(
+      `[snapshot] Blob list failed: ${e instanceof Error ? e.message : String(e)}`,
+    );
+    return [];
+  }
+
+  if (entries.length === 0) return [];
+
+  // Sort chronologically (lexicographic on ISO-based keys), take newest.
+  entries.sort((a, b) => a.pathname.localeCompare(b.pathname));
+  const newest = entries.slice(-limit);
+
+  // Fetch each blob's content in parallel via the SDK's get().
+  const results = await Promise.allSettled(
+    newest.map(async ({ url }) => {
+      const result = await get(url, { access: "private" });
+      if (!result) return null;
+      const data = await new Response(result.stream).json();
+      return data as ForecastSnapshot;
+    }),
+  );
+
+  const snapshots: ForecastSnapshot[] = [];
+  for (const r of results) {
+    if (r.status === "fulfilled" && r.value) {
+      snapshots.push(r.value);
+    }
+  }
+
+  return snapshots;
 }

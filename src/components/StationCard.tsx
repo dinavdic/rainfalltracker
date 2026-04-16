@@ -327,10 +327,18 @@ export default function StationCard({
               : null;
             const marketProb = marketResult?.prob ?? null;
             const marketIsStale = marketResult?.isStale ?? false;
-            const edge =
-              hasForecast && marketProb !== null
-                ? t.ensembleProbability * 100 - marketProb * 100
-                : null;
+            let edge: number | null = null;
+            if (hasForecast && marketProb !== null && kalshiPrice) {
+              const ensemblePct = t.ensembleProbability * 100;
+              const midPct = marketProb * 100;
+              if (ensemblePct >= midPct) {
+                // YES edge: cost to buy YES = yesAsk
+                edge = kalshiPrice.yesAsk !== null ? ensemblePct - kalshiPrice.yesAsk : null;
+              } else {
+                // NO edge: cost to buy NO = noAsk, implied yes = 100 - noAsk
+                edge = kalshiPrice.noAsk !== null ? ensemblePct - (100 - kalshiPrice.noAsk) : null;
+              }
+            }
 
             // Portfolio position for this specific market ticker.
             const positionData =
@@ -347,11 +355,24 @@ export default function StationCard({
             const pctMain = t.ensembleProbability * 100;
             const showRange = hasModelRange && spread > 2 && pctMain > 1 && pctMain < 99;
 
-            // Edge range info
-            const worstEdge = showRange && marketProb !== null
-              ? loProb * 100 - marketProb * 100 : null;
-            const bestEdge = showRange && marketProb !== null
-              ? hiProb * 100 - marketProb * 100 : null;
+            // Edge range using ask prices
+            let worstEdge: number | null = null;
+            let bestEdge: number | null = null;
+            if (showRange && marketProb !== null && kalshiPrice) {
+              const ensemblePct = t.ensembleProbability * 100;
+              const midPct = marketProb * 100;
+              if (ensemblePct >= midPct) {
+                if (kalshiPrice.yesAsk !== null) {
+                  worstEdge = loProb * 100 - kalshiPrice.yesAsk;
+                  bestEdge = hiProb * 100 - kalshiPrice.yesAsk;
+                }
+              } else {
+                if (kalshiPrice.noAsk !== null) {
+                  worstEdge = loProb * 100 - (100 - kalshiPrice.noAsk);
+                  bestEdge = hiProb * 100 - (100 - kalshiPrice.noAsk);
+                }
+              }
+            }
 
             // Kalshi price delta
             const priceDelta = kalshiDeltas?.[thresholdKey] ?? null;

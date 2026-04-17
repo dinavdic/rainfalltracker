@@ -78,8 +78,10 @@ async function loadClimoDailyMean(): Promise<Record<string, Record<string, numbe
 
 /**
  * Get the skill weight for a given lead day (1-indexed, 1..16).
- * Uses the accumulated_skill fitted curve since we care about
- * cumulative precipitation accuracy.
+ * Uses daily_skill.fitted — the per-day correlation between forecast
+ * and observed daily rainfall. This is the right weight for BMA mixture
+ * sampling, where each draw mixes a single forecast day's ensemble
+ * against climatology. (accumulated_skill is for cumulative forecasts.)
  */
 function getSkillWeight(
   skillCurves: SkillCurvesData | null,
@@ -89,7 +91,7 @@ function getSkillWeight(
   if (!skillCurves) return 1; // no weighting if unavailable
   const station = skillCurves[stationCode];
   if (!station) return 1;
-  const fitted = station.accumulated_skill.fitted;
+  const fitted = station.daily_skill.fitted;
   const idx = Math.min(Math.max(leadDay - 1, 0), fitted.length - 1);
   return fitted[idx];
 }
@@ -400,14 +402,22 @@ async function fetchSingleModelEnsemble(
     memberSums.push(Math.round(total * 100) / 100);
   }
 
-  // --- Compute effective skill weight (average across forecast days) ---
+  // --- Compute effective skill weight (average across forecast days
+  //     that remain in the current month) ---
   let skillWeight = 1;
   if (hasSkill && dayBuckets.length > 0) {
-    let wSum = 0;
-    for (const bucket of dayBuckets) {
-      wSum += getSkillWeight(skillCurves, stationCode, bucket.leadDay);
-    }
-    skillWeight = wSum / dayBuckets.length;
+    const perDay = dayBuckets.map((b) => ({
+      lead: b.leadDay,
+      w: getSkillWeight(skillCurves, stationCode, b.leadDay),
+    }));
+    const wSum = perDay.reduce((a, p) => a + p.w, 0);
+    skillWeight = wSum / perDay.length;
+    console.log(
+      `[skill] ${stationCode} ${model}: avgW=${skillWeight.toFixed(4)} ` +
+        `over ${perDay.length} days, perDay=[${perDay
+          .map((p) => `d${p.lead}:${p.w.toFixed(3)}`)
+          .join(", ")}]`,
+    );
   }
 
   return { memberSums, forecastDays, modelRunLabel, skillWeight };

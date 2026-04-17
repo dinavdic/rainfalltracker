@@ -244,19 +244,21 @@ export function computeProbabilities(
   const dim = daysInMonth(month);
   const daysRemaining = dim - dayOfMonth;
 
+  // Ensemble nominal horizon: OpenMeteo returns 16 days, but we trust
+  // the first 14 for BMA mixing. Tail gamma applies ONLY to days in the
+  // current month that fall beyond this horizon.
+  const ENSEMBLE_HORIZON_DAYS = 14;
+
   // Pre-compute tail gamma once (shared across thresholds)
   let tailGamma: GammaParams | null = null;
-  if (ensemble !== null) {
-    const uncoveredDays = daysRemaining - ensemble.forecastDays;
-    if (uncoveredDays > 0) {
-      const tailStartDay = dayOfMonth + ensemble.forecastDays;
-      for (let d = tailStartDay; d >= dayOfMonth + 1; d--) {
-        const dist = monthData?.days[String(d)];
-        const candidate = getEnsoGamma(dist, ensoPhase);
-        if (candidate) {
-          tailGamma = candidate;
-          break;
-        }
+  if (ensemble !== null && daysRemaining > ENSEMBLE_HORIZON_DAYS) {
+    const tailStartDay = dayOfMonth + ENSEMBLE_HORIZON_DAYS;
+    for (let d = tailStartDay; d >= dayOfMonth + 1; d--) {
+      const dist = monthData?.days[String(d)];
+      const candidate = getEnsoGamma(dist, ensoPhase);
+      if (candidate) {
+        tailGamma = candidate;
+        break;
       }
     }
   }
@@ -303,7 +305,10 @@ export function computeProbabilities(
 
     if (ensemble !== null) {
       const w = ensemble.skillWeight ?? 1;
-      const hasUncovered = daysRemaining - ensemble.forecastDays > 0;
+      // Tail gamma only for days beyond the 14-day ensemble horizon that
+      // still fall in the current month. Days within the 14-day horizon
+      // are always covered by the ensemble member QPF.
+      const hasUncovered = daysRemaining > ENSEMBLE_HORIZON_DAYS;
 
       const combined = bmaMixtureExceedProb(
         ensemble.memberSums, remainingNeeded, w, gamma, tailGamma, hasUncovered,

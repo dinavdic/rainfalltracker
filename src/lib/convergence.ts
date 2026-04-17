@@ -30,6 +30,8 @@ export interface StationSnapshot {
 export interface ForecastSnapshot {
   timestamp: string; // ISO 8601
   stations: Record<string, StationSnapshot>;
+  modelRuns?: { gefs: string | null; ecmwf: string | null };
+  dataFingerprint?: { gefs: number; ecmwf: number };
 }
 
 // --- Convergence metric types ---
@@ -86,7 +88,16 @@ export function buildSnapshot(
   const snapshot: ForecastSnapshot = {
     timestamp: new Date().toISOString(),
     stations: {},
+    modelRuns: undefined,
   };
+
+  // Extract model run labels from the first station with ensemble data
+  for (const rainData of Object.values(rainfall.stations)) {
+    if (rainData.ensemble?.modelRuns) {
+      snapshot.modelRuns = { ...rainData.ensemble.modelRuns };
+      break;
+    }
+  }
 
   for (const [code, rainData] of Object.entries(rainfall.stations)) {
     const ens = rainData.ensemble;

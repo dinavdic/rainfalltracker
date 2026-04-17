@@ -11,13 +11,69 @@ import {
 import { computeProbabilities } from "@/lib/probability";
 import { STATIONS } from "@/lib/stations";
 import { buildSnapshot } from "@/lib/convergence";
-import { saveServerSnapshot } from "@/lib/snapshot-store";
+import {
+  saveServerSnapshot,
+  loadServerSnapshots,
+} from "@/lib/snapshot-store";
 
 export const dynamic = "force-dynamic";
 export const maxDuration = 120; // seconds — ensemble fetches can be slow
 
 // Must match Dashboard.tsx
 const CURRENT_ENSO_PHASE: EnsoPhase = "neutral";
+
+// Reference station for lightweight model-run checks
+const REF_STATION = { lat: 47.61, lon: -122.33 }; // SEA
+const OPEN_METEO_ENSEMBLE_BASE =
+  "https://ensemble-api.open-meteo.com/v1/ensemble";
+
+interface ModelFingerprint {
+  gefs: number;
+  ecmwf: number;
+}
+
+async function fetchModelFingerprint(
+  log: string[],
+): Promise<ModelFingerprint> {
+  const { lat, lon } = REF_STATION;
+
+  const gefsUrl =
+    `${OPEN_METEO_ENSEMBLE_BASE}?latitude=${lat}&longitude=${lon}` +
+    `&models=gfs_seamless&hourly=precipitation&forecast_days=1`;
+  const gefsResp = await fetch(gefsUrl, { signal: AbortSignal.timeout(10000) });
+  if (!gefsResp.ok) throw new Error(`GEFS meta fetch: ${gefsResp.status}`);
+  const gefsData = await gefsResp.json();
+  const gefsMem =
+    (gefsData.hourly?.precipitation_member00 as (number | null)[]) ?? [];
+  const gefsFp = gefsMem
+    .slice(0, 24)
+    .reduce((a: number, b: number | null) => a + (b ?? 0), 0);
+
+  await new Promise((r) => setTimeout(r, 1000));
+
+  const ecmwfUrl =
+    `${OPEN_METEO_ENSEMBLE_BASE}?latitude=${lat}&longitude=${lon}` +
+    `&models=ecmwf_ifs025&hourly=precipitation&forecast_days=1`;
+  const ecmwfResp = await fetch(ecmwfUrl, {
+    signal: AbortSignal.timeout(10000),
+  });
+  if (!ecmwfResp.ok) throw new Error(`ECMWF meta fetch: ${ecmwfResp.status}`);
+  const ecmwfData = await ecmwfResp.json();
+  const ecmwfMem =
+    (ecmwfData.hourly?.precipitation_member00 as (number | null)[]) ?? [];
+  const ecmwfFp = ecmwfMem
+    .slice(0, 24)
+    .reduce((a: number, b: number | null) => a + (b ?? 0), 0);
+
+  const fp = {
+    gefs: Math.round(gefsFp * 100) / 100,
+    ecmwf: Math.round(ecmwfFp * 100) / 100,
+  };
+  log.push(
+    `[update] Model fingerprint: GEFS=${fp.gefs} ECMWF=${fp.ecmwf}`,
+  );
+  return fp;
+}
 
 const NTFY_TOPIC_URL = "https://ntfy.sh/rainfall-din-updates";
 
@@ -126,9 +182,8 @@ async function sendUpdateNotification(body: string): Promise<void> {
  *   - External monitoring can verify the cron is producing valid data
  *
  * Secured with a bearer token from CRON_SECRET env var.
- * Called by:
- *   - Vercel Cron (daily at noon UTC)
- *   - cron-job.org (every 6 hours)
+ * Called by Vercel Cron during model release windows (16 times/day).
+ * Checks for new model data before running the expensive ensemble fetch.
  */
 export async function GET(request: NextRequest) {
   // --- Auth ---
@@ -147,9 +202,54 @@ export async function GET(request: NextRequest) {
 
   const startMs = Date.now();
   const log: string[] = [];
-  log.push(`[cron] Starting update at ${new Date().toISOString()}`);
+  log.push(`[update] Starting at ${new Date().toISOString()}`);
 
   try {
+    // --- Lightweight model-run check ---
+    // Fetch one day of data for a reference station from each model.
+    // Compare a data fingerprint to the last snapshot to detect new runs.
+    let newFingerprint: ModelFingerprint | null = null;
+    try {
+      newFingerprint = await fetchModelFingerprint(log);
+
+      const latestSnapshots = await loadServerSnapshots(1);
+      const lastSnapshot = latestSnapshots[0] ?? null;
+      const prev = lastSnapshot?.dataFingerprint ?? null;
+
+      if (
+        prev &&
+        prev.gefs === newFingerprint.gefs &&
+        prev.ecmwf === newFingerprint.ecmwf
+      ) {
+        const runs = lastSnapshot?.modelRuns;
+        const gefsLabel = runs?.gefs ?? "?";
+        const ecmwfLabel = runs?.ecmwf ?? "?";
+        log.push(
+          `[update] No new model run (GEFS=${gefsLabel} ECMWF=${ecmwfLabel}), skipping`,
+        );
+        for (const line of log) console.log(line);
+        return NextResponse.json({
+          ok: true,
+          skipped: true,
+          reason: "no_new_model_run",
+          log,
+        });
+      }
+
+      if (prev) {
+        const changes: string[] = [];
+        if (prev.gefs !== newFingerprint.gefs) changes.push("GEFS");
+        if (prev.ecmwf !== newFingerprint.ecmwf) changes.push("ECMWF");
+        log.push(`[update] New model data detected (${changes.join("+")}), proceeding`);
+      } else {
+        log.push(`[update] No previous fingerprint, proceeding with full update`);
+      }
+    } catch (e) {
+      log.push(
+        `[update] Fingerprint check failed (${e instanceof Error ? e.message : String(e)}), proceeding anyway`,
+      );
+    }
+
     // --- Fetch rainfall and Kalshi via internal API routes ---
     const origin = request.nextUrl.origin;
 
@@ -216,8 +316,11 @@ export async function GET(request: NextRequest) {
 
     log.push(`[cron] Probabilities computed for ${Object.keys(stationProbs).length} stations`);
 
-    // --- Build snapshot, cache to /tmp, return in response ---
+    // --- Build snapshot, attach fingerprint, persist ---
     const snapshot = buildSnapshot(rainfall, stationProbs, kalshi);
+    if (newFingerprint) {
+      snapshot.dataFingerprint = newFingerprint;
+    }
 
     await saveServerSnapshot(snapshot);
 

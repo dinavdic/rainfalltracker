@@ -2,6 +2,6 @@
   "crons": [
     { "path": "/api/cron/probe", "schedule": "*/10 * * * *" },
     { "path": "/api/cron/update", "schedule": "30 1,2,7,8,13,14,19,20 * * *" },
-    { "path": "/api/cron/update", "schedule": "0 2,3,8,9,14,15,20,21 * * *" }
+    { "path": "/api/cron/update", "schedule": "0 2,3,8,9,14,15,16,17,18,20,21 * * *" }
   ]
 }

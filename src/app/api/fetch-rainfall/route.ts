@@ -8,7 +8,6 @@ import {
   EnsembleStats,
   ModelBreakdown,
   SkillCurvesData,
-  HistoricalData,
 } from "@/lib/types";
 import { saveRainfallData, loadRainfallData, isCacheFresh } from "@/lib/data-store";
 import { fetchNWSCLI, formatShortDate } from "@/lib/nws-cli";
@@ -29,8 +28,6 @@ const resolvedGridCache: Record<string, NWSGridInfo> = {};
 // --- Skill curves & climatological daily means (loaded once, cached) ---
 
 let cachedSkillCurves: SkillCurvesData | null = null;
-// climoDailyMean[stationCode]["MM-DD"] = mean daily precip in inches
-let cachedClimoDailyMean: Record<string, Record<string, number>> | null = null;
 
 async function loadSkillCurves(): Promise<SkillCurvesData | null> {
   if (cachedSkillCurves) return cachedSkillCurves;
@@ -40,38 +37,7 @@ async function loadSkillCurves(): Promise<SkillCurvesData | null> {
     cachedSkillCurves = JSON.parse(raw) as SkillCurvesData;
     return cachedSkillCurves;
   } catch {
-    console.warn("[skill] Could not load skill-curves.json, skipping skill weighting");
-    return null;
-  }
-}
-
-async function loadClimoDailyMean(): Promise<Record<string, Record<string, number>> | null> {
-  if (cachedClimoDailyMean) return cachedClimoDailyMean;
-  try {
-    const filePath = path.join(process.cwd(), "public", "data", "historical-distributions.json");
-    const raw = await fs.readFile(filePath, "utf-8");
-    const hist = JSON.parse(raw) as HistoricalData;
-
-    const result: Record<string, Record<string, number>> = {};
-    for (const [code, sdata] of Object.entries(hist.stations)) {
-      const daily: Record<string, number> = {};
-      for (const [monthStr, mdata] of Object.entries(sdata.months)) {
-        const month = parseInt(monthStr, 10);
-        const dim = mdata.days_in_month;
-        for (let d = 1; d <= dim; d++) {
-          const prevMean = mdata.days[String(d - 1)]?.mean ?? 0;
-          const currMean = mdata.days[String(d)]?.mean ?? 0;
-          const singleDay = Math.max(0, prevMean - currMean);
-          const mmdd = `${String(month).padStart(2, "0")}-${String(d).padStart(2, "0")}`;
-          daily[mmdd] = Math.round(singleDay * 10000) / 10000;
-        }
-      }
-      result[code] = daily;
-    }
-    cachedClimoDailyMean = result;
-    return result;
-  } catch {
-    console.warn("[skill] Could not load historical-distributions.json for climo means");
+    console.warn("[skill] Could not load skill-curves.json, using DEFAULT_SKILL fallback");
     return null;
   }
 }
@@ -82,18 +48,28 @@ async function loadClimoDailyMean(): Promise<Record<string, Record<string, numbe
  * and observed daily rainfall. This is the right weight for BMA mixture
  * sampling, where each draw mixes a single forecast day's ensemble
  * against climatology. (accumulated_skill is for cumulative forecasts.)
+ *
+ * Applies a floor of DEFAULT_SKILL so stations with near-zero verified
+ * skill (MDW, MIA) still give the ensemble some weight. Raw daily skill
+ * near zero understates usefulness — even weak models beat pure
+ * climatology for the first few days.
  */
+const DEFAULT_SKILL = 0.15;
+
 function getSkillWeight(
   skillCurves: SkillCurvesData | null,
   stationCode: string,
   leadDay: number
 ): number {
-  if (!skillCurves) return 1; // no weighting if unavailable
+  if (!skillCurves) return DEFAULT_SKILL;
   const station = skillCurves[stationCode];
-  if (!station) return 1;
-  const fitted = station.daily_skill.fitted;
+  if (!station) return DEFAULT_SKILL;
+  const fitted = station.daily_skill?.fitted;
+  if (!fitted || fitted.length === 0) return DEFAULT_SKILL;
   const idx = Math.min(Math.max(leadDay - 1, 0), fitted.length - 1);
-  return fitted[idx];
+  const v = fitted[idx];
+  if (!Number.isFinite(v)) return DEFAULT_SKILL;
+  return Math.max(DEFAULT_SKILL, v);
 }
 
 /**
@@ -276,7 +252,6 @@ async function fetchSingleModelEnsemble(
   stationCode: string,
   model: string,
   skillCurves: SkillCurvesData | null,
-  climoDaily: Record<string, Record<string, number>> | null
 ): Promise<{ memberSums: number[]; forecastDays: number; modelRunLabel: string | null; skillWeight: number }> {
   const url =
     `${OPEN_METEO_ENSEMBLE_BASE}?latitude=${lat}&longitude=${lon}` +
@@ -364,9 +339,6 @@ async function fetchSingleModelEnsemble(
       )
     : 0;
 
-  const stationClimo = climoDaily?.[stationCode] ?? null;
-  const hasSkill = skillCurves !== null && stationClimo !== null;
-
   // --- Step 1: Compute raw daily totals (inches) for every member × day ---
   // rawDaily[memberIdx][bucketIdx] = daily precip in inches (unweighted)
   const rawDaily: number[][] = [];
@@ -404,21 +376,20 @@ async function fetchSingleModelEnsemble(
 
   // --- Compute effective skill weight (average across forecast days
   //     that remain in the current month) ---
-  let skillWeight = 1;
-  if (hasSkill && dayBuckets.length > 0) {
-    const perDay = dayBuckets.map((b) => ({
-      lead: b.leadDay,
-      w: getSkillWeight(skillCurves, stationCode, b.leadDay),
-    }));
-    const wSum = perDay.reduce((a, p) => a + p.w, 0);
-    skillWeight = wSum / perDay.length;
-    console.log(
-      `[skill] ${stationCode} ${model}: avgW=${skillWeight.toFixed(4)} ` +
-        `over ${perDay.length} days, perDay=[${perDay
-          .map((p) => `d${p.lead}:${p.w.toFixed(3)}`)
-          .join(", ")}]`,
-    );
-  }
+  const perDay = dayBuckets.map((b) => ({
+    lead: b.leadDay,
+    w: getSkillWeight(skillCurves, stationCode, b.leadDay),
+  }));
+  const skillWeight = perDay.length > 0
+    ? perDay.reduce((a, p) => a + p.w, 0) / perDay.length
+    : DEFAULT_SKILL;
+
+  console.log(
+    `[skill] ${stationCode} ${model}: reading daily_skill.fitted for ` +
+      `${perDay.length} days: perDay=[${perDay
+        .map((p) => `d${p.lead}:${p.w.toFixed(3)}`)
+        .join(", ")}] avg=${skillWeight.toFixed(4)}`,
+  );
 
   return { memberSums, forecastDays, modelRunLabel, skillWeight };
 }
@@ -432,15 +403,12 @@ async function fetchCombinedEnsemble(
   lon: number,
   stationCode: string
 ): Promise<EnsembleData> {
-  // Load skill curves and climo daily means (cached after first call)
-  const [skillCurves, climoDaily] = await Promise.all([
-    loadSkillCurves(),
-    loadClimoDailyMean(),
-  ]);
+  // Load skill curves (cached after first call)
+  const skillCurves = await loadSkillCurves();
 
   // Fetch GEFS first (rate-limited — caller handles the first delay)
   const gefsResult = await fetchSingleModelEnsemble(
-    lat, lon, stationCode, "gfs_seamless", skillCurves, climoDaily
+    lat, lon, stationCode, "gfs_seamless", skillCurves,
   );
 
   // Rate limit before ECMWF request
@@ -457,7 +425,7 @@ async function fetchCombinedEnsemble(
   let ecmwfResult: { memberSums: number[]; forecastDays: number; modelRunLabel: string | null; skillWeight: number } | null = null;
   try {
     ecmwfResult = await fetchSingleModelEnsemble(
-      lat, lon, stationCode, "ecmwf_ifs025", skillCurves, climoDaily
+      lat, lon, stationCode, "ecmwf_ifs025", skillCurves,
     );
     console.log(`[ensemble] ${stationCode}: ECMWF OK (${ecmwfResult.memberSums.length} members)`);
   } catch (e) {

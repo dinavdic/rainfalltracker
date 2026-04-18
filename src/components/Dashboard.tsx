@@ -390,6 +390,7 @@ export default function Dashboard() {
         <NYCPolymarketPanel
           polymarket={polymarket}
           nycProbs={stationProbs["NYC"] ?? null}
+          nycKalshi={kalshi?.stations["NYC"] ?? null}
         />
 
         {/* Cumulative chart */}

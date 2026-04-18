@@ -6,6 +6,7 @@ import {
   RainfallApiResponse,
   KalshiApiResponse,
   KalshiPortfolioResponse,
+  PolymarketApiResponse,
   StationProbabilities,
   EnsoPhase,
 } from "@/lib/types";
@@ -23,6 +24,7 @@ import { computeAllMomentum } from "@/lib/momentum";
 import StationCard from "./StationCard";
 import CumulativeChart from "./CumulativeChart";
 import TopMovers from "./TopMovers";
+import NYCPolymarketPanel from "./NYCPolymarketPanel";
 
 const MONTH_NAMES = [
   "",
@@ -75,6 +77,7 @@ export default function Dashboard() {
   const [rainfall, setRainfall] = useState<RainfallApiResponse | null>(null);
   const [kalshi, setKalshi] = useState<KalshiApiResponse | null>(null);
   const [portfolio, setPortfolio] = useState<KalshiPortfolioResponse | null>(null);
+  const [polymarket, setPolymarket] = useState<PolymarketApiResponse | null>(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const [liveDataFailed, setLiveDataFailed] = useState(false);
@@ -99,12 +102,15 @@ export default function Dashboard() {
         return;
       }
 
-      // Fetch live rainfall, Kalshi markets, and Kalshi portfolio in parallel
-      const [rainResult, kalshiResult, portfolioResult] = await Promise.allSettled([
-        fetch("/api/fetch-rainfall"),
-        fetch("/api/fetch-kalshi"),
-        fetch("/api/fetch-portfolio"),
-      ]);
+      // Fetch live rainfall, Kalshi markets, Kalshi portfolio, and
+      // Polymarket NYC buckets in parallel.
+      const [rainResult, kalshiResult, portfolioResult, polymarketResult] =
+        await Promise.allSettled([
+          fetch("/api/fetch-rainfall"),
+          fetch("/api/fetch-kalshi"),
+          fetch("/api/fetch-portfolio"),
+          fetch("/api/fetch-polymarket"),
+        ]);
 
       if (rainResult.status === "fulfilled" && rainResult.value.ok) {
         setRainfall(await rainResult.value.json());
@@ -121,6 +127,11 @@ export default function Dashboard() {
         setPortfolio(await portfolioResult.value.json());
       }
       // Portfolio failure is non-fatal — positions just won't render
+
+      if (polymarketResult.status === "fulfilled" && polymarketResult.value.ok) {
+        setPolymarket(await polymarketResult.value.json());
+      }
+      // Polymarket failure is non-fatal — NYC panel hides when unavailable
 
       // Fetch server-side snapshots from Blob storage (non-blocking)
       try {
@@ -180,9 +191,9 @@ export default function Dashboard() {
   useEffect(() => {
     if (rainfall && Object.keys(stationProbs).length > 0 && !snapshotSaved.current) {
       snapshotSaved.current = true;
-      saveSnapshot(rainfall, stationProbs, kalshi);
+      saveSnapshot(rainfall, stationProbs, kalshi, polymarket);
     }
-  }, [rainfall, stationProbs, kalshi]);
+  }, [rainfall, stationProbs, kalshi, polymarket]);
 
   // Compute convergence, momentum, and Kalshi delta metrics from snapshot history
   const { convergenceMap, divergenceHistories, momentumMap, kalshiDeltaMap, mergedSnapshots } = useMemo(() => {
@@ -374,6 +385,12 @@ export default function Dashboard() {
             );
           })}
         </div>
+
+        {/* NYC Polymarket bucket panel */}
+        <NYCPolymarketPanel
+          polymarket={polymarket}
+          nycProbs={stationProbs["NYC"] ?? null}
+        />
 
         {/* Cumulative chart */}
         {historical && (

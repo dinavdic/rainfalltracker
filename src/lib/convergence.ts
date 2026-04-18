@@ -2,6 +2,7 @@ import {
   RainfallApiResponse,
   StationProbabilities,
   KalshiApiResponse,
+  PolymarketApiResponse,
 } from "./types";
 
 // --- Snapshot types ---
@@ -27,11 +28,21 @@ export interface StationSnapshot {
   kalshiPrices?: Record<string, number>;
 }
 
+// Polymarket YES bid/ask for a single bucket, stored per-snapshot for
+// historical tracking alongside Kalshi mid-prices.
+export interface PolymarketBucketPrice {
+  yesBid: number | null; // cents (0-100)
+  yesAsk: number | null; // cents (0-100)
+}
+
 export interface ForecastSnapshot {
   timestamp: string; // ISO 8601
   stations: Record<string, StationSnapshot>;
   modelRuns?: { gefs: string | null; ecmwf: string | null };
   dataFingerprint?: { gefs: number; ecmwf: number };
+  // Polymarket bucket-market prices keyed by station code
+  // (currently only "NYC"). Each entry maps bucket label → bid/ask.
+  polymarketPrices?: Record<string, Record<string, PolymarketBucketPrice>>;
 }
 
 // --- Convergence metric types ---
@@ -84,6 +95,7 @@ export function buildSnapshot(
   rainfall: RainfallApiResponse,
   stationProbs: Record<string, StationProbabilities>,
   kalshi?: KalshiApiResponse | null,
+  polymarket?: PolymarketApiResponse | null,
 ): ForecastSnapshot {
   const snapshot: ForecastSnapshot = {
     timestamp: new Date().toISOString(),
@@ -151,6 +163,20 @@ export function buildSnapshot(
     snapshot.stations[code] = stationSnap;
   }
 
+  // Attach Polymarket bucket prices (NYC). Only write the key if there
+  // are usable quotes, so the snapshot stays small when unavailable.
+  if (polymarket && polymarket.outcomes.length > 0) {
+    const nyc: Record<string, PolymarketBucketPrice> = {};
+    for (const o of polymarket.outcomes) {
+      if (o.yesBid !== null || o.yesAsk !== null) {
+        nyc[o.label] = { yesBid: o.yesBid, yesAsk: o.yesAsk };
+      }
+    }
+    if (Object.keys(nyc).length > 0) {
+      snapshot.polymarketPrices = { NYC: nyc };
+    }
+  }
+
   return snapshot;
 }
 
@@ -189,8 +215,9 @@ export function saveSnapshot(
   rainfall: RainfallApiResponse,
   stationProbs: Record<string, StationProbabilities>,
   kalshi?: KalshiApiResponse | null,
+  polymarket?: PolymarketApiResponse | null,
 ): void {
-  const snapshot = buildSnapshot(rainfall, stationProbs, kalshi);
+  const snapshot = buildSnapshot(rainfall, stationProbs, kalshi, polymarket);
   const existing = loadSnapshots();
   const updated = appendSnapshot(existing, snapshot);
   persistSnapshots(updated);

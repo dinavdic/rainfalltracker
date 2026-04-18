@@ -169,6 +169,26 @@ export interface KalshiApiResponse {
   discoveryLog: string[]; // ticker discovery debug info
 }
 
+// --- Polymarket market data (mutually exclusive bucket event) ---
+
+export interface PolymarketOutcome {
+  label: string; // canonical bucket label like "<2", "2-3", ">6"
+  lowerBound: number | null; // inches; null for open-ended low side
+  upperBound: number | null; // inches; null for open-ended high side
+  yesBid: number | null; // cents (0-100)
+  yesAsk: number | null; // cents (0-100)
+  lastPrice: number | null; // cents
+  volume: number; // notional volume (dollars, rounded)
+}
+
+export interface PolymarketApiResponse {
+  outcomes: PolymarketOutcome[];
+  fetchedAt: string;
+  slug: string;
+  error?: string;
+  log?: string[];
+}
+
 // --- Kalshi portfolio (authenticated, read-only) ---
 
 export interface KalshiPosition {

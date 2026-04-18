@@ -4,6 +4,7 @@ import path from "path";
 import {
   RainfallApiResponse,
   KalshiApiResponse,
+  PolymarketApiResponse,
   HistoricalData,
   StationProbabilities,
   EnsoPhase,
@@ -253,12 +254,14 @@ export async function GET(request: NextRequest) {
     // --- Fetch rainfall and Kalshi via internal API routes ---
     const origin = request.nextUrl.origin;
 
-    const [rainResult, kalshiResult] = await Promise.allSettled([
+    const [rainResult, kalshiResult, polymarketResult] = await Promise.allSettled([
       fetch(`${origin}/api/fetch-rainfall`),
       fetch(`${origin}/api/fetch-kalshi`),
+      fetch(`${origin}/api/fetch-polymarket`),
     ]);
 
     let kalshi: KalshiApiResponse | null = null;
+    let polymarket: PolymarketApiResponse | null = null;
 
     if (rainResult.status !== "fulfilled" || !rainResult.value.ok) {
       const reason =
@@ -280,6 +283,15 @@ export async function GET(request: NextRequest) {
       log.push(`[cron] Kalshi fetched: ${Object.keys(kalshi!.stations).length} stations`);
     } else {
       log.push("[cron] Kalshi fetch failed (non-fatal, continuing without market data)");
+    }
+
+    if (polymarketResult.status === "fulfilled" && polymarketResult.value.ok) {
+      polymarket = await polymarketResult.value.json();
+      log.push(
+        `[cron] Polymarket fetched: ${polymarket?.outcomes.length ?? 0} NYC buckets`,
+      );
+    } else {
+      log.push("[cron] Polymarket fetch failed (non-fatal, continuing without NYC buckets)");
     }
 
     // --- Load historical data for probability computation ---
@@ -317,7 +329,7 @@ export async function GET(request: NextRequest) {
     log.push(`[cron] Probabilities computed for ${Object.keys(stationProbs).length} stations`);
 
     // --- Build snapshot, attach fingerprint, persist ---
-    const snapshot = buildSnapshot(rainfall, stationProbs, kalshi);
+    const snapshot = buildSnapshot(rainfall, stationProbs, kalshi, polymarket);
     if (newFingerprint) {
       snapshot.dataFingerprint = newFingerprint;
     }

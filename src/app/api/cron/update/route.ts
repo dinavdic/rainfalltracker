@@ -210,8 +210,20 @@ export async function GET(request: NextRequest) {
   }
 
   const authHeader = request.headers.get("authorization");
-  if (authHeader !== `Bearer ${secret}`) {
-    console.log(`[update] Auth failed: header=${authHeader ? "present but wrong" : "missing"}`);
+  const received = authHeader?.startsWith("Bearer ")
+    ? authHeader.slice(7)
+    : authHeader ?? null;
+  console.log(
+    `[update] auth: received=${received?.slice(0, 8) ?? "null"} ` +
+      `expected=${process.env.CRON_SECRET?.slice(0, 8) ?? "null"} ` +
+      `rawHeaderLen=${authHeader?.length ?? 0} ` +
+      `receivedLen=${received?.length ?? 0} ` +
+      `expectedLen=${secret.length}`,
+  );
+  if (received !== secret) {
+    console.log(
+      `[update] Auth failed: header=${authHeader ? "present but wrong" : "missing"}`,
+    );
     return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
   }
 

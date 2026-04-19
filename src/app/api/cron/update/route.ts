@@ -2,7 +2,6 @@ import { NextRequest, NextResponse } from "next/server";
 import { promises as fs } from "fs";
 import path from "path";
 import {
-  RainfallApiResponse,
   KalshiApiResponse,
   PolymarketApiResponse,
   HistoricalData,
@@ -16,6 +15,9 @@ import {
   saveServerSnapshot,
   loadServerSnapshots,
 } from "@/lib/snapshot-store";
+import { fetchRainfallDirect } from "@/lib/rainfall-fetcher";
+import { fetchKalshiDirect } from "@/lib/kalshi-fetcher";
+import { fetchPolymarketNYCDirect } from "@/lib/polymarket-fetcher";
 
 export const dynamic = "force-dynamic";
 export const maxDuration = 120; // seconds — ensemble fetches can be slow
@@ -285,60 +287,47 @@ export async function GET(request: NextRequest) {
       );
     }
 
-    // --- Fetch rainfall and Kalshi via internal API routes ---
-    const origin = request.nextUrl.origin;
-    log.push(`[update] Internal fetch origin: ${origin}`);
+    // --- Fetch rainfall, Kalshi, and Polymarket via direct imports ---
+    // Direct function calls bypass Vercel Deployment Protection and
+    // avoid 3 HTTP roundtrips that were getting 401'd.
+    log.push(`[update] Fetching data via direct imports (no HTTP)`);
 
     const [rainResult, kalshiResult, polymarketResult] = await Promise.allSettled([
-      fetch(`${origin}/api/fetch-rainfall`),
-      fetch(`${origin}/api/fetch-kalshi`),
-      fetch(`${origin}/api/fetch-polymarket`),
+      fetchRainfallDirect(),
+      fetchKalshiDirect(),
+      fetchPolymarketNYCDirect(),
     ]);
-
-    // Log status of each internal fetch
-    log.push(
-      `[update] fetch-rainfall: ${rainResult.status === "fulfilled" ? `HTTP ${rainResult.value.status}` : `rejected: ${rainResult.reason}`}`,
-    );
-    log.push(
-      `[update] fetch-kalshi: ${kalshiResult.status === "fulfilled" ? `HTTP ${kalshiResult.value.status}` : `rejected: ${kalshiResult.reason}`}`,
-    );
-    log.push(
-      `[update] fetch-polymarket: ${polymarketResult.status === "fulfilled" ? `HTTP ${polymarketResult.value.status}` : `rejected: ${polymarketResult.reason}`}`,
-    );
 
     let kalshi: KalshiApiResponse | null = null;
     let polymarket: PolymarketApiResponse | null = null;
 
-    if (rainResult.status !== "fulfilled" || !rainResult.value.ok) {
-      const reason =
-        rainResult.status === "rejected"
-          ? rainResult.reason
-          : `HTTP ${rainResult.value.status}`;
+    if (rainResult.status !== "fulfilled") {
+      const reason = String(rainResult.reason);
       log.push(`[cron] Rainfall fetch failed: ${reason}`);
       flushLog(log);
       return NextResponse.json(
-        { error: "Rainfall fetch failed", detail: String(reason), log },
+        { error: "Rainfall fetch failed", detail: reason, log },
         { status: 502 },
       );
     }
 
-    const rainfall: RainfallApiResponse = await rainResult.value.json();
+    const rainfall = rainResult.value;
     log.push(`[cron] Rainfall fetched: ${Object.keys(rainfall.stations).length} stations`);
 
-    if (kalshiResult.status === "fulfilled" && kalshiResult.value.ok) {
-      kalshi = await kalshiResult.value.json();
-      log.push(`[cron] Kalshi fetched: ${Object.keys(kalshi!.stations).length} stations`);
+    if (kalshiResult.status === "fulfilled") {
+      kalshi = kalshiResult.value;
+      log.push(`[cron] Kalshi fetched: ${Object.keys(kalshi.stations).length} stations`);
     } else {
-      log.push("[cron] Kalshi fetch failed (non-fatal, continuing without market data)");
+      log.push(`[cron] Kalshi fetch failed (non-fatal): ${kalshiResult.reason}`);
     }
 
-    if (polymarketResult.status === "fulfilled" && polymarketResult.value.ok) {
-      polymarket = await polymarketResult.value.json();
+    if (polymarketResult.status === "fulfilled") {
+      polymarket = polymarketResult.value;
       log.push(
-        `[cron] Polymarket fetched: ${polymarket?.outcomes.length ?? 0} NYC buckets`,
+        `[cron] Polymarket fetched: ${polymarket.outcomes.length} NYC buckets`,
       );
     } else {
-      log.push("[cron] Polymarket fetch failed (non-fatal, continuing without NYC buckets)");
+      log.push(`[cron] Polymarket fetch failed (non-fatal): ${polymarketResult.reason}`);
     }
 
     // --- Load historical data for probability computation ---

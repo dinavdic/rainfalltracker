@@ -172,6 +172,14 @@ async function sendUpdateNotification(body: string): Promise<void> {
 }
 
 /**
+ * Flush the log array to console so Vercel Runtime Logs capture it.
+ * Called at EVERY return point to prevent silent failures.
+ */
+function flushLog(log: string[]): void {
+  for (const line of log) console.log(line);
+}
+
+/**
  * GET /api/cron/update
  *
  * Fetches fresh rainfall + Kalshi data, computes probabilities, builds a
@@ -187,9 +195,14 @@ async function sendUpdateNotification(body: string): Promise<void> {
  * Checks for new model data before running the expensive ensemble fetch.
  */
 export async function GET(request: NextRequest) {
+  // Immediate console.log so Vercel logs show the function was invoked,
+  // even if it crashes before the log array is flushed.
+  console.log(`[update] === CRON HANDLER INVOKED === ${new Date().toISOString()}`);
+
   // --- Auth ---
   const secret = process.env.CRON_SECRET;
   if (!secret) {
+    console.log("[update] CRON_SECRET not configured, returning 500");
     return NextResponse.json(
       { error: "CRON_SECRET not configured" },
       { status: 500 },
@@ -198,12 +211,14 @@ export async function GET(request: NextRequest) {
 
   const authHeader = request.headers.get("authorization");
   if (authHeader !== `Bearer ${secret}`) {
+    console.log(`[update] Auth failed: header=${authHeader ? "present but wrong" : "missing"}`);
     return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
   }
 
   const startMs = Date.now();
   const log: string[] = [];
-  log.push(`[update] Starting at ${new Date().toISOString()}`);
+  log.push(`[update] Cron fired at ${new Date().toISOString()}`);
+  log.push(`[update] Auth passed`);
 
   try {
     // --- Lightweight model-run check ---
@@ -217,18 +232,25 @@ export async function GET(request: NextRequest) {
       const lastSnapshot = latestSnapshots[0] ?? null;
       const prev = lastSnapshot?.dataFingerprint ?? null;
 
-      if (
-        prev &&
-        prev.gefs === newFingerprint.gefs &&
-        prev.ecmwf === newFingerprint.ecmwf
-      ) {
+      // Detailed fingerprint comparison logging
+      log.push(
+        `[update] Fingerprint check: current={gefs:${newFingerprint.gefs}, ecmwf:${newFingerprint.ecmwf}}` +
+        `, saved=${prev ? `{gefs:${prev.gefs}, ecmwf:${prev.ecmwf}}` : "null"}` +
+        `, lastSnapshotTs=${lastSnapshot?.timestamp ?? "none"}` +
+        `, lastSnapshotHasModelRuns=${!!lastSnapshot?.modelRuns}`,
+      );
+
+      const willSkip = !!prev && prev.gefs === newFingerprint.gefs && prev.ecmwf === newFingerprint.ecmwf;
+      log.push(`[update] Fingerprint check: will_skip=${willSkip}`);
+
+      if (willSkip) {
         const runs = lastSnapshot?.modelRuns;
         const gefsLabel = runs?.gefs ?? "?";
         const ecmwfLabel = runs?.ecmwf ?? "?";
         log.push(
           `[update] No new model run (GEFS=${gefsLabel} ECMWF=${ecmwfLabel}), skipping`,
         );
-        for (const line of log) console.log(line);
+        flushLog(log);
         return NextResponse.json({
           ok: true,
           skipped: true,
@@ -243,7 +265,7 @@ export async function GET(request: NextRequest) {
         if (prev.ecmwf !== newFingerprint.ecmwf) changes.push("ECMWF");
         log.push(`[update] New model data detected (${changes.join("+")}), proceeding`);
       } else {
-        log.push(`[update] No previous fingerprint, proceeding with full update`);
+        log.push(`[update] No previous fingerprint (saved=null), proceeding with full update`);
       }
     } catch (e) {
       log.push(
@@ -253,12 +275,24 @@ export async function GET(request: NextRequest) {
 
     // --- Fetch rainfall and Kalshi via internal API routes ---
     const origin = request.nextUrl.origin;
+    log.push(`[update] Internal fetch origin: ${origin}`);
 
     const [rainResult, kalshiResult, polymarketResult] = await Promise.allSettled([
       fetch(`${origin}/api/fetch-rainfall`),
       fetch(`${origin}/api/fetch-kalshi`),
       fetch(`${origin}/api/fetch-polymarket`),
     ]);
+
+    // Log status of each internal fetch
+    log.push(
+      `[update] fetch-rainfall: ${rainResult.status === "fulfilled" ? `HTTP ${rainResult.value.status}` : `rejected: ${rainResult.reason}`}`,
+    );
+    log.push(
+      `[update] fetch-kalshi: ${kalshiResult.status === "fulfilled" ? `HTTP ${kalshiResult.value.status}` : `rejected: ${kalshiResult.reason}`}`,
+    );
+    log.push(
+      `[update] fetch-polymarket: ${polymarketResult.status === "fulfilled" ? `HTTP ${polymarketResult.value.status}` : `rejected: ${polymarketResult.reason}`}`,
+    );
 
     let kalshi: KalshiApiResponse | null = null;
     let polymarket: PolymarketApiResponse | null = null;
@@ -269,6 +303,7 @@ export async function GET(request: NextRequest) {
           ? rainResult.reason
           : `HTTP ${rainResult.value.status}`;
       log.push(`[cron] Rainfall fetch failed: ${reason}`);
+      flushLog(log);
       return NextResponse.json(
         { error: "Rainfall fetch failed", detail: String(reason), log },
         { status: 502 },
@@ -303,6 +338,7 @@ export async function GET(request: NextRequest) {
     );
     const histRaw = await fs.readFile(histPath, "utf-8");
     const historical: HistoricalData = JSON.parse(histRaw);
+    log.push(`[cron] Historical data loaded`);
 
     // --- Compute probabilities ---
     const now = new Date();
@@ -334,10 +370,16 @@ export async function GET(request: NextRequest) {
       snapshot.dataFingerprint = newFingerprint;
     }
 
+    log.push(
+      `[cron] Snapshot built: modelRuns=${JSON.stringify(snapshot.modelRuns)}` +
+      `, fingerprint=${JSON.stringify(snapshot.dataFingerprint)}` +
+      `, stations=${Object.keys(snapshot.stations).length}`,
+    );
+
     await saveServerSnapshot(snapshot);
 
     const elapsed = Date.now() - startMs;
-    log.push(`[cron] Snapshot built and persisted to Blob + /tmp (${elapsed}ms total)`);
+    log.push(`[cron] Snapshot persisted to Blob (${elapsed}ms total)`);
 
     // --- Push notification (non-fatal on failure) ---
     const stationCount = Object.keys(snapshot.stations).length;
@@ -354,9 +396,7 @@ export async function GET(request: NextRequest) {
     await sendUpdateNotification(body);
     log.push(`[cron] Notification sent (${body})`);
 
-    for (const line of log) {
-      console.log(line);
-    }
+    flushLog(log);
 
     return NextResponse.json({
       ok: true,
@@ -370,9 +410,7 @@ export async function GET(request: NextRequest) {
   } catch (e) {
     const msg = e instanceof Error ? e.message : String(e);
     log.push(`[cron] Fatal error: ${msg}`);
-    for (const line of log) {
-      console.error(line);
-    }
+    flushLog(log);
     return NextResponse.json({ error: msg, log }, { status: 500 });
   }
 }

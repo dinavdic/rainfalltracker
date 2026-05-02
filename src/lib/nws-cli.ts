@@ -116,6 +116,45 @@ export async function fetchNWSCLI(cliParams: string): Promise<NWSCLIResult> {
     }
   }
 
+  const now = new Date();
+  const currentMonth = now.getUTCMonth() + 1;
+  const currentYear = now.getUTCFullYear();
+  const currentDay = now.getUTCDate();
+  const currentMonthLabel = now.toLocaleString("en-US", {
+    month: "long",
+    timeZone: "UTC",
+  });
+
+  // --- Cross-month guard ---
+  // On the first day or two of a new month, the freshest CLI product
+  // is usually the prior month's final summary (e.g. "April 30" on
+  // May 1) and contains the prior month's full MTD (e.g. 2.77"). The
+  // new month's MTD is genuinely 0.00 until the first daily CLI for
+  // it is published, so the prior-month value must not bleed forward.
+  if (dataDate) {
+    const reportMonth = parseInt(dataDate.substring(5, 7), 10);
+    if (reportMonth !== currentMonth) {
+      console.log(
+        `[nws-cli] ${stationCode}: report date = ${dataDate}, ` +
+          `current month = ${currentMonthLabel}, returning MTD = 0.00 ` +
+          `(prior-month report; new month not yet reporting)`,
+      );
+      const synthesizedDate = `${currentYear}-${String(currentMonth).padStart(2, "0")}-01`;
+      return { mtd: 0, dataDate: synthesizedDate };
+    }
+  } else if (mtd !== null && currentDay <= 2 && mtd > 0.5) {
+    // Fallback: when the report date couldn't be parsed and we're at
+    // the very start of a new month, an MTD significantly above zero
+    // is more likely a stale prior-month value than a genuine reading.
+    // Return null rather than risk reporting last month's total.
+    console.log(
+      `[nws-cli] ${stationCode}: report date = unparseable, ` +
+        `current month = ${currentMonthLabel}, day ${currentDay}, ` +
+        `MTD=${mtd} suspiciously high — returning null`,
+    );
+    return { mtd: null, dataDate: null };
+  }
+
   if (dataDate) {
     const reportDate = new Date(dataDate + "T00:00:00Z");
     const fullMonth = reportDate.toLocaleString("en-US", {
@@ -129,10 +168,11 @@ export async function fetchNWSCLI(cliParams: string): Promise<NWSCLIResult> {
     const dayNum = reportDate.getUTCDate();
     const mtdLabel = mtd !== null ? `MTD=${mtd}` : "MTD=null";
     console.log(
-      `[nws-cli] ${stationCode}: found report for ${fullMonth} ${dayNum}, ${mtdLabel}`,
+      `[nws-cli] ${stationCode}: report date = ${dataDate}, ` +
+        `current month = ${currentMonthLabel}, returning MTD = ${mtdLabel} ` +
+        `(${fullMonth} ${dayNum})`,
     );
 
-    const now = new Date();
     const todayStr = utcDateString(now);
     const yd = new Date(now);
     yd.setUTCDate(yd.getUTCDate() - 1);
@@ -143,7 +183,10 @@ export async function fetchNWSCLI(cliParams: string): Promise<NWSCLIResult> {
       );
     }
   } else {
-    console.log(`[nws-cli] ${stationCode}: no report date parsed from product`);
+    console.log(
+      `[nws-cli] ${stationCode}: report date = unparseable, ` +
+        `current month = ${currentMonthLabel}, returning MTD = ${mtd ?? "null"}`,
+    );
   }
 
   return { mtd, dataDate };

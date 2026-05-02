@@ -234,6 +234,11 @@ export async function GET(request: NextRequest) {
   log.push(`[update] Cron fired at ${new Date().toISOString()}`);
   log.push(`[update] Auth passed`);
 
+  const forceParam = request.nextUrl.searchParams.get("force") === "1";
+  if (forceParam) {
+    log.push(`[update] force=1 param set — skipping fingerprint check`);
+  }
+
   try {
     // --- Lightweight model-run check ---
     // Fetch one day of data for a reference station from each model.
@@ -242,44 +247,62 @@ export async function GET(request: NextRequest) {
     try {
       newFingerprint = await fetchModelFingerprint(log);
 
-      const latestSnapshots = await loadServerSnapshots(1);
-      const lastSnapshot = latestSnapshots[0] ?? null;
-      const prev = lastSnapshot?.dataFingerprint ?? null;
+      if (!forceParam) {
+        const latestSnapshots = await loadServerSnapshots(1);
+        const lastSnapshot = latestSnapshots[0] ?? null;
+        const prev = lastSnapshot?.dataFingerprint ?? null;
 
-      // Detailed fingerprint comparison logging
-      log.push(
-        `[update] Fingerprint check: current={gefs:${newFingerprint.gefs}, ecmwf:${newFingerprint.ecmwf}}` +
-        `, saved=${prev ? `{gefs:${prev.gefs}, ecmwf:${prev.ecmwf}}` : "null"}` +
-        `, lastSnapshotTs=${lastSnapshot?.timestamp ?? "none"}` +
-        `, lastSnapshotHasModelRuns=${!!lastSnapshot?.modelRuns}`,
-      );
-
-      const willSkip = !!prev && prev.gefs === newFingerprint.gefs && prev.ecmwf === newFingerprint.ecmwf;
-      log.push(`[update] Fingerprint check: will_skip=${willSkip}`);
-
-      if (willSkip) {
-        const runs = lastSnapshot?.modelRuns;
-        const gefsLabel = runs?.gefs ?? "?";
-        const ecmwfLabel = runs?.ecmwf ?? "?";
+        // Detailed fingerprint comparison logging
         log.push(
-          `[update] No new model run (GEFS=${gefsLabel} ECMWF=${ecmwfLabel}), skipping`,
+          `[update] Fingerprint check: current={gefs:${newFingerprint.gefs}, ecmwf:${newFingerprint.ecmwf}}` +
+          `, saved=${prev ? `{gefs:${prev.gefs}, ecmwf:${prev.ecmwf}}` : "null"}` +
+          `, lastSnapshotTs=${lastSnapshot?.timestamp ?? "none"}` +
+          `, lastSnapshotHasModelRuns=${!!lastSnapshot?.modelRuns}`,
         );
-        flushLog(log);
-        return NextResponse.json({
-          ok: true,
-          skipped: true,
-          reason: "no_new_model_run",
-          log,
-        });
-      }
 
-      if (prev) {
-        const changes: string[] = [];
-        if (prev.gefs !== newFingerprint.gefs) changes.push("GEFS");
-        if (prev.ecmwf !== newFingerprint.ecmwf) changes.push("ECMWF");
-        log.push(`[update] New model data detected (${changes.join("+")}), proceeding`);
-      } else {
-        log.push(`[update] No previous fingerprint (saved=null), proceeding with full update`);
+        const modelsMatch = !!prev && prev.gefs === newFingerprint.gefs && prev.ecmwf === newFingerprint.ecmwf;
+
+        // Skip only if models match AND last snapshot is less than 30 minutes old.
+        // This ensures MTD changes (from new CLI reports) still trigger updates
+        // even when model data hasn't changed.
+        const snapshotAgeMs = lastSnapshot?.timestamp
+          ? Date.now() - new Date(lastSnapshot.timestamp).getTime()
+          : Infinity;
+        const isStale = snapshotAgeMs > 30 * 60 * 1000;
+        const willSkip = modelsMatch && !isStale;
+
+        log.push(
+          `[update] Fingerprint check: models_match=${modelsMatch}` +
+          `, snapshot_age_min=${Math.round(snapshotAgeMs / 60000)}` +
+          `, is_stale=${isStale}, will_skip=${willSkip}`,
+        );
+
+        if (willSkip) {
+          const runs = lastSnapshot?.modelRuns;
+          const gefsLabel = runs?.gefs ?? "?";
+          const ecmwfLabel = runs?.ecmwf ?? "?";
+          log.push(
+            `[update] No new model run (GEFS=${gefsLabel} ECMWF=${ecmwfLabel}) and snapshot <30min old, skipping`,
+          );
+          flushLog(log);
+          return NextResponse.json({
+            ok: true,
+            skipped: true,
+            reason: "no_new_model_run",
+            log,
+          });
+        }
+
+        if (modelsMatch && isStale) {
+          log.push(`[update] Models unchanged but snapshot is stale (${Math.round(snapshotAgeMs / 60000)}min), proceeding to refresh MTDs`);
+        } else if (prev) {
+          const changes: string[] = [];
+          if (prev.gefs !== newFingerprint.gefs) changes.push("GEFS");
+          if (prev.ecmwf !== newFingerprint.ecmwf) changes.push("ECMWF");
+          log.push(`[update] New model data detected (${changes.join("+")}), proceeding`);
+        } else {
+          log.push(`[update] No previous fingerprint (saved=null), proceeding with full update`);
+        }
       }
     } catch (e) {
       log.push(

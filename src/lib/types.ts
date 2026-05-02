@@ -185,7 +185,9 @@ export interface PolymarketApiResponse {
   outcomes: PolymarketOutcome[];
   fetchedAt: string;
   slug: string;
+  slugsAttempted?: string[];
   error?: string;
+  errorDetail?: string;
   log?: string[];
 }
 

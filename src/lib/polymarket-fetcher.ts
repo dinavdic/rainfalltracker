@@ -13,14 +13,24 @@ const GAMMA_BASE = "https://gamma-api.polymarket.com";
 const CLOB_BASE = "https://clob.polymarket.com";
 
 /**
- * Derive the Polymarket slug for the current month, e.g.
- *   precipitation-in-nyc-in-may
- * Polymarket has used this naming convention consistently for the NYC
- * monthly rainfall events.
+ * Generate candidate slugs for the current month's NYC precipitation
+ * event. Polymarket's naming has been consistent ("precipitation-in-nyc-
+ * in-<month>") but may vary for new months. We try the canonical form
+ * first, then year-suffixed and alternative naming patterns.
  */
-function currentMonthSlug(now: Date = new Date()): string {
+function candidateSlugs(now: Date = new Date()): string[] {
   const month = now.toLocaleString("en-US", { month: "long" }).toLowerCase();
-  return `precipitation-in-nyc-in-${month}`;
+  const year = now.getUTCFullYear();
+  return [
+    `precipitation-in-nyc-in-${month}`,
+    `precipitation-in-nyc-in-${month}-${year}`,
+    `nyc-precipitation-${month}`,
+    `nyc-precipitation-${month}-${year}`,
+    `precipitation-nyc-${month}`,
+    `precipitation-nyc-${month}-${year}`,
+    `nyc-rainfall-${month}`,
+    `nyc-rainfall-${month}-${year}`,
+  ];
 }
 
 interface GammaMarket {
@@ -172,56 +182,74 @@ async function fetchClobBook(
   }
 }
 
-/**
- * Fetch the Polymarket NYC monthly rainfall event and return its
- * bucket outcomes with live YES bid/ask in cents. Defaults to the
- * current calendar month's slug; pass an explicit slug to override.
- */
-export async function fetchPolymarketNYC(
-  log: string[] = [],
-  slug: string = currentMonthSlug(),
-): Promise<PolymarketApiResponse> {
-  log.push(`[polymarket] Fetching event slug=${slug}`);
+async function trySlug(
+  slug: string,
+  log: string[],
+): Promise<{ event: GammaEvent | null; httpStatus: number | null; error?: string }> {
   const eventUrl = `${GAMMA_BASE}/events?slug=${encodeURIComponent(slug)}`;
-
-  let event: GammaEvent | null = null;
   try {
     const resp = await fetch(eventUrl, {
       signal: AbortSignal.timeout(10000),
       cache: "no-store",
     });
     if (!resp.ok) {
-      log.push(`[polymarket] Event fetch failed: ${resp.status}`);
-      return {
-        outcomes: [],
-        fetchedAt: new Date().toISOString(),
-        slug,
-        error: `gamma ${resp.status}`,
-        log,
-      };
+      log.push(`[polymarket] slug="${slug}" → HTTP ${resp.status}`);
+      return { event: null, httpStatus: resp.status };
     }
     const data = (await resp.json()) as GammaEvent[] | GammaEvent;
     const events = Array.isArray(data) ? data : [data];
-    event = events.find((e) => e?.slug === slug) ?? events[0] ?? null;
+    const event = events.find((e) => e?.slug === slug) ?? events[0] ?? null;
+    if (!event || !Array.isArray(event.markets) || event.markets.length === 0) {
+      log.push(`[polymarket] slug="${slug}" → OK but 0 markets`);
+      return { event: null, httpStatus: resp.status };
+    }
+    log.push(`[polymarket] slug="${slug}" → found ${event.markets.length} markets`);
+    return { event, httpStatus: resp.status };
   } catch (e) {
     const msg = e instanceof Error ? e.message : String(e);
-    log.push(`[polymarket] Event fetch error: ${msg}`);
-    return {
-      outcomes: [],
-      fetchedAt: new Date().toISOString(),
-      slug,
-      error: msg,
-      log,
-    };
+    log.push(`[polymarket] slug="${slug}" → error: ${msg}`);
+    return { event: null, httpStatus: null, error: msg };
+  }
+}
+
+/**
+ * Fetch the Polymarket NYC monthly rainfall event and return its
+ * bucket outcomes with live YES bid/ask in cents. Tries multiple slug
+ * candidates when the primary slug returns no markets; pass an explicit
+ * slug to skip the fallback search.
+ */
+export async function fetchPolymarketNYC(
+  log: string[] = [],
+  slug?: string,
+): Promise<PolymarketApiResponse> {
+  const slugsToTry = slug ? [slug] : candidateSlugs();
+  log.push(`[polymarket] Trying ${slugsToTry.length} slug candidate(s): ${slugsToTry.join(", ")}`);
+
+  let event: GammaEvent | null = null;
+  let matchedSlug = slugsToTry[0];
+  const slugsAttempted: string[] = [];
+
+  for (const candidate of slugsToTry) {
+    slugsAttempted.push(candidate);
+    const result = await trySlug(candidate, log);
+    if (result.event) {
+      event = result.event;
+      matchedSlug = candidate;
+      break;
+    }
   }
 
-  if (!event || !Array.isArray(event.markets) || event.markets.length === 0) {
-    log.push(`[polymarket] Event has no markets`);
+  if (!event) {
+    const now = new Date();
+    const monthLabel = now.toLocaleString("en-US", { month: "long" });
+    log.push(`[polymarket] No event found after trying all ${slugsAttempted.length} slugs`);
     return {
       outcomes: [],
       fetchedAt: new Date().toISOString(),
-      slug,
-      error: "no_markets",
+      slug: matchedSlug,
+      slugsAttempted,
+      error: `not_found`,
+      errorDetail: `NYC ${monthLabel} market not yet listed on Polymarket`,
       log,
     };
   }
@@ -297,7 +325,8 @@ export async function fetchPolymarketNYC(
   return {
     outcomes,
     fetchedAt: new Date().toISOString(),
-    slug,
+    slug: matchedSlug,
+    slugsAttempted,
     log,
   };
 }
@@ -308,4 +337,36 @@ export async function fetchPolymarketNYCDirect(): Promise<PolymarketApiResponse>
   const resp = await fetchPolymarketNYC(log);
   for (const line of log) console.log(line);
   return resp;
+}
+
+export interface PolymarketSearchResult {
+  slug: string;
+  title: string;
+  marketsCount: number;
+}
+
+export async function searchPolymarketEvents(
+  query: string,
+): Promise<{ results: PolymarketSearchResult[]; error?: string }> {
+  const url = `${GAMMA_BASE}/events?active=true&closed=false&limit=20&search=${encodeURIComponent(query)}`;
+  try {
+    const resp = await fetch(url, {
+      signal: AbortSignal.timeout(10000),
+      cache: "no-store",
+    });
+    if (!resp.ok) {
+      return { results: [], error: `gamma search ${resp.status}` };
+    }
+    const data = (await resp.json()) as GammaEvent[];
+    const events = Array.isArray(data) ? data : [data];
+    return {
+      results: events.map((e) => ({
+        slug: e.slug,
+        title: e.title ?? e.slug,
+        marketsCount: Array.isArray(e.markets) ? e.markets.length : 0,
+      })),
+    };
+  } catch (e) {
+    return { results: [], error: e instanceof Error ? e.message : String(e) };
+  }
 }

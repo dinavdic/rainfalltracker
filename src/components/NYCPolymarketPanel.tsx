@@ -153,7 +153,10 @@ export default function NYCPolymarketPanel({
   nycProbs,
   nycKalshi,
 }: NYCPolymarketPanelProps) {
+  const monthLabel = new Date().toLocaleString("en-US", { month: "long" });
+
   if (!polymarket || polymarket.outcomes.length === 0) {
+    const detail = polymarket?.errorDetail;
     return (
       <div className="bg-white rounded-lg shadow-sm p-4 mb-8">
         <div className="flex items-baseline justify-between mb-2">
@@ -165,8 +168,13 @@ export default function NYCPolymarketPanel({
           </span>
         </div>
         <p className="text-sm text-gray-500">
-          Polymarket April rainfall bucket markets unavailable.
+          {detail ?? `NYC ${monthLabel} market not yet listed on Polymarket.`}
         </p>
+        {polymarket?.slugsAttempted && polymarket.slugsAttempted.length > 1 && (
+          <p className="text-xs text-gray-400 mt-1">
+            Tried slugs: {polymarket.slugsAttempted.join(", ")}
+          </p>
+        )}
       </div>
     );
   }
@@ -183,7 +191,7 @@ export default function NYCPolymarketPanel({
     <div className="bg-white rounded-lg shadow-sm p-4 mb-8">
       <div className="flex items-baseline justify-between mb-3">
         <h2 className="text-lg font-semibold text-gray-900">
-          NYC Polymarket — April rainfall buckets
+          NYC Polymarket — {monthLabel} rainfall buckets
         </h2>
         <span className="text-xs text-gray-400">
           {new Date(polymarket.fetchedAt).toLocaleTimeString()}

@@ -26,12 +26,6 @@ import CumulativeChart from "./CumulativeChart";
 import TopMovers from "./TopMovers";
 import NYCPolymarketPanel from "./NYCPolymarketPanel";
 
-const MONTH_NAMES = [
-  "",
-  "January", "February", "March", "April", "May", "June",
-  "July", "August", "September", "October", "November", "December",
-];
-
 function daysInMonth(month: number, year: number): number {
   return new Date(year, month, 0).getDate();
 }
@@ -293,7 +287,8 @@ export default function Dashboard() {
         {/* Header */}
         <header className="mb-8">
           <h1 className="text-3xl font-bold text-gray-900">
-            {MONTH_NAMES[month]} {year} Rainfall Tracker
+            {now.toLocaleString("en-US", { month: "long", year: "numeric" })}{" "}
+            Rainfall Tracker
           </h1>
           <p className="text-sm text-gray-500 mt-1">
             {daysRemaining} day{daysRemaining !== 1 ? "s" : ""} remaining

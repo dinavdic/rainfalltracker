@@ -263,6 +263,23 @@ function matchStationByTitle(title: string): string | null {
   return null;
 }
 
+/**
+ * Build the current-month event suffix Kalshi uses on rainfall events,
+ * e.g. "26MAY" in May 2026. Combines a 2-digit year with the 3-letter
+ * uppercase month abbreviation. Used to filter `series_ticker` search
+ * results down to the currently-trading event when month-end overlap
+ * means both the prior and current month's events are still `open`.
+ */
+function currentMonthSuffix(now: Date = new Date()): string {
+  const yy = String(now.getUTCFullYear() % 100).padStart(2, "0");
+  const months = [
+    "JAN", "FEB", "MAR", "APR", "MAY", "JUN",
+    "JUL", "AUG", "SEP", "OCT", "NOV", "DEC",
+  ];
+  const mmm = months[now.getUTCMonth()];
+  return `${yy}${mmm}`;
+}
+
 export async function discoverAndFetchMarkets(
   log: string[],
   options?: { skipOrderbook?: boolean },
@@ -272,6 +289,9 @@ export async function discoverAndFetchMarkets(
   for (const station of STATIONS) {
     result[station.code] = { thresholds: {}, eventTicker: null };
   }
+
+  const monthSuffix = currentMonthSuffix();
+  log.push(`[kalshi] Current month suffix: ${monthSuffix}`);
 
   const seenTickers = new Set<string>();
   let sfoLogged = false;
@@ -283,6 +303,18 @@ export async function discoverAndFetchMarkets(
     for (const market of markets) {
       if (seenTickers.has(market.ticker)) continue;
       seenTickers.add(market.ticker);
+
+      // Skip markets whose event_ticker doesn't match the current month.
+      // Kalshi keeps prior-month events `open` for a few days while they
+      // settle, so series_ticker search returns both — without this filter
+      // we'd pick up stale April markets in May.
+      const evt = market.event_ticker || "";
+      if (evt && !evt.includes(monthSuffix)) {
+        log.push(
+          `[kalshi] Skipping wrong-month market: ${market.ticker} (event=${evt}, expected ${monthSuffix})`,
+        );
+        continue;
+      }
 
       const station =
         defaultStation || matchStationByTitle(market.title);

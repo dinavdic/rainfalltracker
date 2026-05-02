@@ -1,15 +1,27 @@
 import { PolymarketApiResponse, PolymarketOutcome } from "@/lib/types";
 
 /**
- * Fetch the NYC April rainfall event from Polymarket, parse its 6
- * bucket outcomes, and pull each outcome's live YES bid/ask from the
- * CLOB orderbook. The event exposes mutually exclusive buckets:
- *   <2, 2-3, 3-4, 4-5, 5-6, >6 (inches)
+ * Fetch the current-month NYC rainfall event from Polymarket, parse its
+ * mutually exclusive bucket outcomes (e.g. <2, 2-3, 3-4, 4-5, 5-6, >6
+ * inches in April), and pull each outcome's live YES bid/ask from the
+ * CLOB orderbook. May and later months may use different bin
+ * boundaries — the bucket parser is defensive and the actual labels
+ * are logged on every fetch.
  */
 
 const GAMMA_BASE = "https://gamma-api.polymarket.com";
 const CLOB_BASE = "https://clob.polymarket.com";
-const DEFAULT_SLUG = "precipitation-in-nyc-in-april";
+
+/**
+ * Derive the Polymarket slug for the current month, e.g.
+ *   precipitation-in-nyc-in-may
+ * Polymarket has used this naming convention consistently for the NYC
+ * monthly rainfall events.
+ */
+function currentMonthSlug(now: Date = new Date()): string {
+  const month = now.toLocaleString("en-US", { month: "long" }).toLowerCase();
+  return `precipitation-in-nyc-in-${month}`;
+}
 
 interface GammaMarket {
   // Polymarket Gamma `markets[]` shape (subset used here).
@@ -161,12 +173,13 @@ async function fetchClobBook(
 }
 
 /**
- * Fetch the Polymarket NYC April rainfall event and return its six
- * bucket outcomes with live YES bid/ask in cents.
+ * Fetch the Polymarket NYC monthly rainfall event and return its
+ * bucket outcomes with live YES bid/ask in cents. Defaults to the
+ * current calendar month's slug; pass an explicit slug to override.
  */
 export async function fetchPolymarketNYC(
   log: string[] = [],
-  slug: string = DEFAULT_SLUG,
+  slug: string = currentMonthSlug(),
 ): Promise<PolymarketApiResponse> {
   log.push(`[polymarket] Fetching event slug=${slug}`);
   const eventUrl = `${GAMMA_BASE}/events?slug=${encodeURIComponent(slug)}`;
@@ -216,6 +229,16 @@ export async function fetchPolymarketNYC(
   log.push(
     `[polymarket] Event "${event.title ?? slug}" has ${event.markets.length} markets`,
   );
+
+  // Log every raw bucket label so we can spot a Polymarket format
+  // change (e.g., new May bin boundaries) and update the parser.
+  for (const m of event.markets) {
+    const raw = m.groupItemTitle ?? m.question ?? "";
+    const canon = canonicalBucketLabel(raw);
+    log.push(
+      `[polymarket] raw bucket label: "${raw}" → canonical: ${canon ?? "UNPARSED"}`,
+    );
+  }
 
   const outcomes: PolymarketOutcome[] = [];
 
